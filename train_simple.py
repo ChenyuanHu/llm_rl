@@ -279,7 +279,6 @@ class SimpleGRPOTrainer:
         self.setup_dataset()
 
         self.test_model()
-        exit()
 
         # 创建输出目录
         os.makedirs(self.config.output_dir, exist_ok=True)
