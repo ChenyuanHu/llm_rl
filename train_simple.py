@@ -34,6 +34,8 @@ class SimpleGRPOTrainer:
         print(f"PyTorch版本: {torch.__version__}")
         if config.use_mps:
             print("MPS可用，将使用Apple Silicon GPU加速")
+        elif config.use_cuda:
+            print("CUDA可用，将使用GPU加速")
         
     def setup_models(self):
         """设置模型和tokenizer"""
@@ -254,7 +256,7 @@ class SimpleGRPOTrainer:
             # 生成对话响应
             outputs = self.ref_model.generate(
                 **inputs,
-                max_new_tokens=1024,  # 减少生成长度
+                max_new_tokens=self.config.max_length,  # 减少生成长度
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.8,
