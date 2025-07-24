@@ -12,26 +12,21 @@ class TrainingConfig:
     dataset_name: str = "openai/gsm8k"
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
-    max_length: int = 512
+    max_length: int = 1024
     max_samples: Optional[int] = 1000  # 为了快速验证，限制样本数量
     
     # GRPO训练配置
     learning_rate: float = 5e-6
     num_train_epochs: int = 3
     per_device_train_batch_size: int = 2  # Apple Silicon优化
-    per_device_eval_batch_size: int = 2
     gradient_accumulation_steps: int = 4
-    warmup_steps: int = 100
     logging_steps: int = 10
-    eval_steps: int = 50
-    save_steps: int = 100
     
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数
     grpo_epochs: int = 1  # 每个batch的GRPO更新次数
     
     # 优化器配置
-    optim: str = "adamw_torch"
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     
@@ -44,13 +39,8 @@ class TrainingConfig:
     output_dir: str = "./outputs"
     logging_dir: str = "./logs"
     
-    # Reward模型配置
-    reward_model_name: str = "Qwen/Qwen2.5-0.5B"  # 使用相同模型作为reward模型
-    
     # 其他配置
     seed: int = 42
-    dataloader_num_workers: int = 0  # Apple Silicon上设为0避免问题
-    remove_unused_columns: bool = False
     
     def get_device(self):
         """获取训练设备"""

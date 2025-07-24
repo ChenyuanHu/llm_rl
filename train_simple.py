@@ -4,14 +4,9 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List
 from datasets import Dataset
-from transformers import (
-    AutoTokenizer, 
-    AutoModelForCausalLM,
-    set_seed
-)
+from transformers import set_seed
 from torch.optim import AdamW
 import torch.nn.functional as F
-from torch.distributions import Categorical
 
 from config import TrainingConfig
 from utils import (
@@ -270,7 +265,6 @@ class SimpleGRPOTrainer:
         save_metrics(metrics_dict, self.config.output_dir)
         
         print("训练完成！")
-        return metrics_dict
 
 def main():
     """主函数"""
@@ -283,7 +277,7 @@ def main():
     trainer = SimpleGRPOTrainer(config)
     
     # 开始训练
-    metrics = trainer.train()
+    trainer.train()
     
     print("\n训练总结:")
     final_stats = trainer.metrics_tracker.get_averages()
