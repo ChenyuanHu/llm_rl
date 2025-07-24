@@ -1,237 +1,285 @@
-import torch
-import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from datasets import load_dataset
-import numpy as np
-from tqdm import tqdm
 import os
-import json
-from typing import List, Dict
-
-from utils import (
-    load_gsm8k_dataset, 
-    compute_reward, 
-    batch_process_data,
-    count_tokens,
-    save_metrics,
-    load_metrics,
-    prepare_prompt,
-    extract_answer
+import torch
+import numpy as np
+from datetime import datetime
+from typing import Dict, List
+import wandb
+from datasets import Dataset
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForCausalLM,
+    TrainingArguments,
+    set_seed
 )
-from grpo import GRPOTrainer
-from visualize import plot_training_metrics
+from trl import (
+    PPOConfig,
+    PPOTrainer,
+    AutoModelForCausalLMWithValueHead,
+    create_reference_model
+)
+from trl.core import LengthSampler
 
+from config import TrainingConfig
+from utils import (
+    load_math_dataset,
+    prepare_dataset_for_grpo,
+    extract_answer,
+    compute_reward,
+    generate_response,
+    save_metrics,
+    setup_model_and_tokenizer,
+    MetricsTracker,
+    format_math_prompt
+)
+
+class GRPOTrainer:
+    """GRPO训练器"""
+    
+    def __init__(self, config: TrainingConfig):
+        self.config = config
+        self.device = config.get_device()
+        self.metrics_tracker = MetricsTracker()
+        
+        # 设置随机种子
+        set_seed(config.seed)
+        
+        # 初始化wandb（可选）
+        self.use_wandb = False  # 设为True启用wandb日志
+        
+        print(f"使用设备: {self.device}")
+        print(f"PyTorch版本: {torch.__version__}")
+        if config.use_mps:
+            print("MPS可用，将使用Apple Silicon GPU加速")
+        
+    def setup_models(self):
+        """设置模型和tokenizer"""
+        # 加载基础模型和tokenizer
+        self.model, self.tokenizer = setup_model_and_tokenizer(self.config)
+        
+        # 创建带有价值头的模型用于PPO训练
+        self.ppo_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            self.config.model_name,
+            trust_remote_code=self.config.trust_remote_code,
+            torch_dtype=self.config.get_torch_dtype(),
+            device_map=self.config.device_map
+        )
+        
+        # 创建参考模型
+        self.ref_model = create_reference_model(self.ppo_model)
+        
+        print("GRPO模型设置完成")
+        
+    def setup_dataset(self):
+        """设置训练数据集"""
+        # 加载原始数据集
+        raw_dataset = load_math_dataset(self.config)
+        
+        # 准备数据集
+        self.dataset = prepare_dataset_for_grpo(raw_dataset, self.tokenizer, self.config)
+        
+        print(f"数据集准备完成，训练样本数: {len(self.dataset)}")
+        
+    def setup_ppo_config(self):
+        """设置PPO配置"""
+        # 使用最基本的PPOConfig参数，明确禁用bf16
+        self.ppo_config = PPOConfig(
+            learning_rate=self.config.learning_rate,
+            batch_size=self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps,
+            mini_batch_size=self.config.per_device_train_batch_size,
+            bf16=False,  # 明确禁用bf16
+            fp16=False   # 明确禁用fp16
+        )
+        
+    def setup_ppo_trainer(self):
+        """设置PPO训练器"""
+        self.ppo_trainer = PPOTrainer(
+            self.ppo_config,
+            self.ppo_model,
+            self.ref_model,
+            self.tokenizer,
+        )
+        
+    def generate_responses(self, queries: List[str]) -> List[str]:
+        """生成模型响应"""
+        responses = []
+        
+        for query in queries:
+            # 使用模型生成响应
+            query_tensor = self.tokenizer.encode(query, return_tensors="pt").to(self.device)
+            
+            with torch.no_grad():
+                response_tensor = self.ppo_trainer.generate(
+                    query_tensor,
+                    max_new_tokens=200,
+                    do_sample=True,
+                    temperature=0.7,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+            
+            # 解码响应（只取新生成的部分）
+            response = self.tokenizer.decode(
+                response_tensor[0][len(query_tensor[0]):], 
+                skip_special_tokens=True
+            ).strip()
+            
+            responses.append(response)
+            
+        return responses
+        
+    def compute_rewards(self, responses: List[str], ground_truths: List[str]) -> List[float]:
+        """计算reward分数"""
+        rewards = []
+        
+        for response, gt in zip(responses, ground_truths):
+            # 从响应中提取答案
+            predicted_answer = extract_answer(response)
+            
+            # 计算reward
+            reward = compute_reward(predicted_answer, gt)
+            rewards.append(reward)
+            
+        return rewards
+        
+    def train_epoch(self, epoch: int):
+        """训练一个epoch"""
+        print(f"\n开始训练 Epoch {epoch + 1}/{self.config.num_train_epochs}")
+        
+        # 准备batch数据
+        batch_size = self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps
+        num_batches = len(self.dataset) // batch_size
+        
+        epoch_metrics = {
+            'token_counts': [],
+            'rewards': [],
+            'losses': []
+        }
+        
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, len(self.dataset))
+            batch = self.dataset.select(range(start_idx, end_idx))
+            
+            # 准备查询和ground truth
+            queries = [format_math_prompt(item['question']) for item in batch]
+            ground_truths = [item['ground_truth'] for item in batch]
+            
+            # 生成响应
+            responses = self.generate_responses(queries)
+            
+            # 计算rewards
+            rewards = self.compute_rewards(responses, ground_truths)
+            
+            # 计算token数量
+            token_counts = [len(self.tokenizer.encode(resp, add_special_tokens=False)) for resp in responses]
+            avg_token_count = np.mean(token_counts)
+            
+            # 准备PPO训练数据
+            query_tensors = [self.tokenizer.encode(q, return_tensors="pt")[0] for q in queries]
+            response_tensors = [self.tokenizer.encode(r, return_tensors="pt")[0] for r in responses]
+            reward_tensors = [torch.tensor(r, dtype=torch.float32) for r in rewards]
+            
+            # PPO训练步骤
+            stats = self.ppo_trainer.step(query_tensors, response_tensors, reward_tensors)
+            
+            # 记录指标
+            current_step = epoch * num_batches + batch_idx
+            avg_reward = np.mean(rewards)
+            avg_loss = stats.get('ppo/loss/total', 0.0)
+            
+            self.metrics_tracker.add_metrics(current_step, avg_token_count, avg_reward, avg_loss)
+            
+            epoch_metrics['token_counts'].append(avg_token_count)
+            epoch_metrics['rewards'].append(avg_reward)
+            epoch_metrics['losses'].append(avg_loss)
+            
+            # 日志输出
+            if (batch_idx + 1) % self.config.logging_steps == 0:
+                print(f"Epoch {epoch + 1}/{self.config.num_train_epochs}, "
+                      f"Batch {batch_idx + 1}/{num_batches}, "
+                      f"Avg Tokens: {avg_token_count:.1f}, "
+                      f"Avg Reward: {avg_reward:.3f}, "
+                      f"Loss: {avg_loss:.4f}")
+                
+                # 显示一个样例
+                if len(responses) > 0:
+                    print(f"样例问题: {batch[0]['question'][:100]}...")
+                    print(f"模型回答: {responses[0][:150]}...")
+                    print(f"正确答案: {ground_truths[0]}")
+                    print(f"Reward: {rewards[0]:.3f}")
+                    print("-" * 50)
+        
+        # 返回epoch统计
+        return {
+            'avg_token_count': np.mean(epoch_metrics['token_counts']),
+            'avg_reward': np.mean(epoch_metrics['rewards']),
+            'avg_loss': np.mean(epoch_metrics['losses'])
+        }
+        
+    def train(self):
+        """主训练循环"""
+        print("="*60)
+        print("开始GRPO训练")
+        print("="*60)
+        
+        # 设置模型和数据
+        self.setup_models()
+        self.setup_dataset()
+        self.setup_ppo_config()
+        self.setup_ppo_trainer()
+        
+        # 创建输出目录
+        os.makedirs(self.config.output_dir, exist_ok=True)
+        os.makedirs(self.config.logging_dir, exist_ok=True)
+        
+        # 训练循环
+        for epoch in range(self.config.num_train_epochs):
+            epoch_stats = self.train_epoch(epoch)
+            
+            print(f"\nEpoch {epoch + 1} 完成:")
+            print(f"  平均Token数: {epoch_stats['avg_token_count']:.1f}")
+            print(f"  平均Reward: {epoch_stats['avg_reward']:.3f}")
+            print(f"  平均Loss: {epoch_stats['avg_loss']:.4f}")
+            
+            # 保存检查点
+            if (epoch + 1) % 1 == 0:  # 每个epoch保存一次
+                checkpoint_dir = os.path.join(self.config.output_dir, f"checkpoint-epoch-{epoch+1}")
+                self.ppo_trainer.save_pretrained(checkpoint_dir)
+                print(f"检查点已保存到: {checkpoint_dir}")
+        
+        # 保存最终模型
+        final_model_dir = os.path.join(self.config.output_dir, "final_model")
+        self.ppo_trainer.save_pretrained(final_model_dir)
+        print(f"最终模型已保存到: {final_model_dir}")
+        
+        # 保存训练指标
+        metrics_dict = self.metrics_tracker.save_to_dict()
+        save_metrics(metrics_dict, self.config.output_dir)
+        
+        print("训练完成！")
+        return metrics_dict
 
 def main():
-    # 配置参数
-    config = {
-        "model_name": "Qwen/Qwen2.5-0.5B",  # 使用0.5B版本，更接近0.6B需求
-        "max_samples_train": 50,   # 先用少量样本测试
-        "max_samples_eval": 20,    # 评估样本数量
-        "batch_size": 2,           # 减少批次大小
-        "num_epochs": 3,
-        "learning_rate": 1e-5,
-        "max_new_tokens": 128,     # 减少最大token数
-        "max_length": 256,         # 减少最大长度
-        "group_size": 2,           # 减少组大小
-        "save_dir": "./outputs",
-        "device": "cpu"  # 先用CPU避免MPS兼容性问题
-    }
+    """主函数"""
+    print("初始化GRPO训练...")
     
-    print(f"使用设备: {config['device']}")
+    # 创建配置
+    config = TrainingConfig()
     
-    # 创建输出目录
-    os.makedirs(config["save_dir"], exist_ok=True)
+    # 创建训练器
+    trainer = GRPOTrainer(config)
     
-    # 加载模型和tokenizer
-    print("加载模型和tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    # 设置左对齐用于生成任务
-    tokenizer.padding_side = "left"
+    # 开始训练
+    metrics = trainer.train()
     
-    model = AutoModelForCausalLM.from_pretrained(
-        config["model_name"],
-        torch_dtype=torch.float32,  # 统一使用float32
-        device_map=config["device"]
-    )
+    print("\n训练总结:")
+    final_stats = trainer.metrics_tracker.get_averages()
+    print(f"平均Token数: {final_stats['avg_tokens']:.1f}")
+    print(f"平均Reward: {final_stats['avg_reward']:.3f}")
+    print(f"平均Loss: {final_stats['avg_loss']:.4f}")
     
-    # 加载数据集
-    print("加载GSM8K数据集...")
-    train_dataset = load_gsm8k_dataset("train", config["max_samples_train"])
-    eval_dataset = load_gsm8k_dataset("test", config["max_samples_eval"])
-    
-    print(f"训练集大小: {len(train_dataset)}")
-    print(f"测试集大小: {len(eval_dataset)}")
-    
-    # 初始化GRPO训练器
-    print("初始化GRPO训练器...")
-    trainer = GRPOTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        learning_rate=config["learning_rate"],
-        group_size=config["group_size"]
-    )
-    
-    # 训练指标
-    metrics = load_metrics(os.path.join(config["save_dir"], "metrics.json"))
-    
-    # 训练循环
-    print("开始训练...")
-    for epoch in range(config["num_epochs"]):
-        print(f"\n=== Epoch {epoch + 1}/{config['num_epochs']} ===")
-        
-        epoch_losses = []
-        epoch_rewards = []
-        epoch_token_counts = []
-        
-        # 创建数据加载器
-        train_data = [train_dataset[i] for i in range(len(train_dataset))]
-        
-        for i in tqdm(range(0, len(train_data), config["batch_size"]), desc="训练"):
-            batch_data = train_data[i:i + config["batch_size"]]
-            
-            # 处理批次数据
-            batch = batch_process_data(batch_data, tokenizer, config["max_length"])
-            
-            input_ids = batch["input_ids"].to(config["device"])
-            attention_mask = batch["attention_mask"].to(config["device"])
-            
-            # 生成响应
-            response_sequences, _ = trainer.generate_responses(
-                input_ids, 
-                attention_mask,
-                max_new_tokens=config["max_new_tokens"]
-            )
-            
-            # 计算奖励
-            rewards = []
-            token_counts = []
-            
-            for j, (response_seq, true_answer) in enumerate(zip(response_sequences, batch["answers"])):
-                # 解码响应
-                response_text = tokenizer.decode(
-                    response_seq[len(input_ids[j]):], 
-                    skip_special_tokens=True
-                )
-                
-                # 计算奖励
-                reward = compute_reward(response_text, true_answer)
-                rewards.append(reward)
-                
-                # 计算token数量
-                token_count = len(response_seq) - len(input_ids[j])
-                token_counts.append(token_count)
-            
-            rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=config["device"])
-            
-            # 创建响应的attention mask
-            response_mask = torch.ones_like(response_sequences, dtype=torch.float32, device=config["device"])
-            response_mask[response_sequences == tokenizer.pad_token_id] = 0.0
-            
-            # 训练步骤
-            step_metrics = trainer.train_step(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                response_ids=response_sequences,
-                response_mask=response_mask,
-                rewards=rewards_tensor
-            )
-            
-            epoch_losses.append(step_metrics["total_loss"])
-            epoch_rewards.append(step_metrics["mean_reward"])
-            epoch_token_counts.extend(token_counts)
-            
-            # 每50步打印一次进度
-            if (i // config["batch_size"] + 1) % 50 == 0:
-                print(f"步骤 {i // config['batch_size'] + 1}: "
-                      f"损失={step_metrics['total_loss']:.4f}, "
-                      f"平均奖励={step_metrics['mean_reward']:.4f}")
-        
-        # 记录epoch指标
-        avg_loss = np.mean(epoch_losses)
-        avg_reward = np.mean(epoch_rewards)
-        avg_token_count = np.mean(epoch_token_counts)
-        
-        metrics["epochs"].append(epoch + 1)
-        metrics["losses"].append(avg_loss)
-        metrics["rewards"].append(avg_reward)
-        metrics["token_counts"].append(avg_token_count)
-        
-        print(f"Epoch {epoch + 1} 完成:")
-        print(f"  平均损失: {avg_loss:.4f}")
-        print(f"  平均奖励: {avg_reward:.4f}")
-        print(f"  平均token数: {avg_token_count:.2f}")
-        
-        # 保存指标
-        save_metrics(metrics, os.path.join(config["save_dir"], "metrics.json"))
-        
-        # 评估
-        if (epoch + 1) % 1 == 0:  # 每个epoch评估一次
-            eval_metrics = evaluate_model(trainer, eval_dataset, tokenizer, config)
-            print(f"  评估准确率: {eval_metrics['accuracy']:.4f}")
-            print(f"  评估平均token数: {eval_metrics['avg_tokens']:.2f}")
-    
-    # 保存最终模型
-    model_save_path = os.path.join(config["save_dir"], "final_model")
-    model.save_pretrained(model_save_path)
-    tokenizer.save_pretrained(model_save_path)
-    print(f"模型已保存到: {model_save_path}")
-    
-    # 绘制训练曲线
-    print("生成训练曲线...")
-    plot_training_metrics(metrics, config["save_dir"])
-    
-    print("训练完成！")
-
-
-def evaluate_model(trainer, eval_dataset, tokenizer, config):
-    """评估模型"""
-    trainer.model.eval()
-    
-    correct = 0
-    total = 0
-    total_tokens = 0
-    
-    eval_data = [eval_dataset[i] for i in range(min(100, len(eval_dataset)))]  # 评估100个样本
-    
-    with torch.no_grad():
-        for i in range(0, len(eval_data), config["batch_size"]):
-            batch_data = eval_data[i:i + config["batch_size"]]
-            batch = batch_process_data(batch_data, tokenizer, config["max_length"])
-            
-            input_ids = batch["input_ids"].to(config["device"])
-            attention_mask = batch["attention_mask"].to(config["device"])
-            
-            # 生成响应
-            response_sequences, _ = trainer.generate_responses(
-                input_ids, 
-                attention_mask,
-                max_new_tokens=config["max_new_tokens"],
-                temperature=0.1,  # 评估时使用更低的温度
-                do_sample=True
-            )
-            
-            for j, (response_seq, true_answer) in enumerate(zip(response_sequences, batch["answers"])):
-                response_text = tokenizer.decode(
-                    response_seq[len(input_ids[j]):], 
-                    skip_special_tokens=True
-                )
-                
-                reward = compute_reward(response_text, true_answer)
-                if reward > 0.5:  # 正确答案
-                    correct += 1
-                
-                token_count = len(response_seq) - len(input_ids[j])
-                total_tokens += token_count
-                total += 1
-    
-    return {
-        "accuracy": correct / total if total > 0 else 0.0,
-        "avg_tokens": total_tokens / total if total > 0 else 0.0
-    }
-
+    # 提示运行可视化
+    print("\n运行以下命令查看训练可视化:")
+    print("python visualize.py")
 
 if __name__ == "__main__":
     main() 
