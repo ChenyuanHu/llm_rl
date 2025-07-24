@@ -1,11 +1,12 @@
 import re
 import torch
 import numpy as np
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Tuple
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import json
 import os
+from config import TrainingConfig
 
 def extract_answer(text: str) -> str:
     """从文本中提取数学答案"""
@@ -37,7 +38,7 @@ def compute_reward(predicted_answer: str, ground_truth: str) -> float:
     else:
         return -0.1  # 轻微惩罚错误答案
 
-def load_math_dataset(config) -> Dataset:
+def load_math_dataset(config: TrainingConfig) -> Dataset:
     """加载数学数据集"""
     print("正在加载GSM8K数据集...")
     dataset = load_dataset(config.dataset_name, config.dataset_config, split=config.dataset_split)
@@ -56,7 +57,7 @@ def format_math_prompt(question: str) -> str:
 
 解答: """
 
-def prepare_dataset_for_grpo(dataset: Dataset, tokenizer: AutoTokenizer, config) -> Dataset:
+def prepare_dataset_for_grpo(dataset: Dataset, tokenizer: AutoTokenizer, config: TrainingConfig) -> Dataset:
     """为GRPO训练准备数据集"""
     
     def tokenize_function(examples):
@@ -91,7 +92,7 @@ def count_tokens_in_response(text: str, tokenizer: AutoTokenizer) -> int:
     tokens = tokenizer.encode(text, add_special_tokens=False)
     return len(tokens)
 
-def generate_response(model, tokenizer, prompt: str, config, max_new_tokens: int = 200) -> Tuple[str, int]:
+def generate_response(model, tokenizer, prompt: str, config: TrainingConfig, max_new_tokens: int = 200) -> Tuple[str, int]:
     """生成模型响应"""
     device = config.get_device()
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -125,7 +126,7 @@ def save_metrics(metrics: Dict[str, List[float]], output_dir: str):
     
     print(f"训练指标已保存到: {metrics_path}")
 
-def setup_model_and_tokenizer(config):
+def setup_model_and_tokenizer(config: TrainingConfig):
     """设置模型和tokenizer"""
     print(f"正在加载模型: {config.model_name}")
     

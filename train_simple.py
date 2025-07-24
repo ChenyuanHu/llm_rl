@@ -222,6 +222,51 @@ class SimpleGRPOTrainer:
             'avg_reward': np.mean(epoch_metrics['rewards']),
             'avg_loss': np.mean(epoch_metrics['losses'])
         }
+
+    def test_model(self):
+        # 测试对话模式 - 使用数学问题
+        print("\n" + "="*50)
+        print("测试模型对话能力")
+        print("="*50)
+        
+        # 构造对话格式的数学问题
+        test_question = "小明有25个苹果，他给了朋友8个苹果，然后又买了12个苹果。请问小明现在有多少个苹果？"
+        
+        # 使用Qwen的对话格式
+        messages = [
+            {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。"},
+            {"role": "user", "content": test_question}
+        ]
+        
+        # 尝试使用chat template
+        chat_input = self.tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        
+        print(f"输入prompt:\n{chat_input}\n")
+        
+        # tokenize对话输入
+        inputs = self.tokenizer(chat_input, return_tensors="pt", truncation=True, max_length=self.config.max_length).to(self.device)
+        
+        with torch.no_grad():
+            # 生成对话响应
+            outputs = self.ref_model.generate(
+                **inputs,
+                max_new_tokens=1024,  # 减少生成长度
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.8,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
+            )
+        
+        # 解码并提取响应
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        
+        print(f"模型回答:\n{response}\n")
+        print("="*50 + "\n")
         
     def train(self):
         """主训练循环"""
@@ -232,7 +277,10 @@ class SimpleGRPOTrainer:
         # 设置模型和数据
         self.setup_models()
         self.setup_dataset()
-        
+
+        self.test_model()
+        exit()
+
         # 创建输出目录
         os.makedirs(self.config.output_dir, exist_ok=True)
         os.makedirs(self.config.logging_dir, exist_ok=True)
