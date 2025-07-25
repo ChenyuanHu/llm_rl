@@ -12,7 +12,7 @@ class TrainingConfig:
     dataset_name: str = "openai/gsm8k"
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
-    max_length: int = 1024
+    max_length: int = 2048
     max_samples: Optional[int] = 1000  # 为了快速验证，限制样本数量
     
     # GRPO训练配置
@@ -34,6 +34,7 @@ class TrainingConfig:
     device_map: str = "auto"
     torch_dtype: str = "float32"  # 改为float32以避免精度问题
     use_mps: bool = torch.backends.mps.is_available()
+    use_cuda: bool = torch.cuda.is_available()
     
     # 输出配置
     output_dir: str = "./outputs"
@@ -46,7 +47,7 @@ class TrainingConfig:
         """获取训练设备"""
         if self.use_mps and torch.backends.mps.is_available():
             return torch.device("mps")
-        elif torch.cuda.is_available():
+        elif self.use_cuda and torch.cuda.is_available():
             return torch.device("cuda")
         else:
             return torch.device("cpu")

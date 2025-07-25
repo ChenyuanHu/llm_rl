@@ -35,6 +35,8 @@ class SimpleGRPOTrainer:
         print(f"PyTorch版本: {torch.__version__}")
         if config.use_mps:
             print("MPS可用，将使用Apple Silicon GPU加速")
+        elif config.use_cuda:
+            print("CUDA可用，将使用GPU加速")
         
     def setup_models(self):
         """设置模型和tokenizer"""
