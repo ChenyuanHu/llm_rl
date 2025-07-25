@@ -72,7 +72,7 @@ class SimpleGRPOTrainer:
         
         with torch.no_grad():
             # 生成响应
-            outputs = self.model.generate(
+            generated_outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=self.config.max_length,
                 do_sample=True,
@@ -81,38 +81,53 @@ class SimpleGRPOTrainer:
                 eos_token_id=self.tokenizer.eos_token_id
             )
 
-        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
-        outputs = outputs[0][len(inputs['input_ids'][0]):]
-        response = self.tokenizer.decode(outputs, skip_special_tokens=True)
+        # 提取响应部分的token ids
+        input_length = inputs['input_ids'].shape[1]
+        response_ids = generated_outputs[0][input_length:]  # 只取响应部分
+        
+        # 解码文本
+        response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         
         # 计算token数量
-        token_count = len(outputs)
+        token_count = len(response_ids)
         
         return {
             'response': response,
             'token_count': token_count,
             'input_ids': inputs['input_ids'],
-            'response_ids': outputs
+            'response_ids': response_ids  # 这是1维tensor: [response_length]
         }
     
     def compute_policy_loss(self, input_ids, response_ids, rewards):
         """计算策略损失"""
-        # 准备输入
-        full_ids = torch.cat([input_ids, response_ids.unsqueeze(0)], dim=1)
+        # 确保response_ids有正确的形状
+        if response_ids.dim() == 1:
+            response_ids = response_ids.unsqueeze(0)  # 添加batch维度
         
-        # 前向传播
-        outputs = self.model(full_ids, labels=full_ids)
+        # 准备输入：拼接prompt和response
+        full_ids = torch.cat([input_ids, response_ids], dim=1)
+        
+        # 前向传播 - 不使用labels来避免自动计算loss
+        outputs = self.model(full_ids)
         logits = outputs.logits
         
-        # 计算当前策略的log概率
-        response_logits = logits[0, len(input_ids[0])-1:-1]  # 响应部分的logits
+        # 只计算response部分的损失
+        prompt_length = input_ids.shape[1]
+        response_length = response_ids.shape[1]
+        
+        # 获取response部分的logits（用于预测下一个token）
+        # logits[:, prompt_length-1:prompt_length+response_length-1] 对应 response_ids的预测
+        response_logits = logits[:, prompt_length-1:prompt_length+response_length-1]
+        
+        # 计算log概率
         log_probs = F.log_softmax(response_logits, dim=-1)
         
         # 选择实际生成的token的log概率
-        selected_log_probs = log_probs.gather(1, response_ids.unsqueeze(1)).squeeze()
-        current_log_prob = selected_log_probs.sum()
+        # response_ids[0] 是实际的token ids
+        selected_log_probs = log_probs[0].gather(1, response_ids[0].unsqueeze(1)).squeeze()
+        current_log_prob = selected_log_probs.mean()  # 使用mean而不是sum
         
-        # 简化的策略梯度损失
+        # 策略梯度损失：最大化奖励加权的log概率
         policy_loss = -current_log_prob * rewards
         
         return policy_loss, current_log_prob
@@ -138,7 +153,7 @@ class SimpleGRPOTrainer:
             reward = compute_reward(predicted_answer, ground_truth)
 
             if reward < 0:
-                print(f"question: {question}")
+                print(f"prompt: {prompt}")
                 print(f"response: {response}")
 
             print(f"predicted_answer: {predicted_answer}")
