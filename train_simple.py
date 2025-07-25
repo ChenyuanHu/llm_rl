@@ -79,20 +79,19 @@ class SimpleGRPOTrainer:
                 pad_token_id=self.tokenizer.eos_token_id,
                 eos_token_id=self.tokenizer.eos_token_id
             )
-        
-        # 解码响应
+
         full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
-        response = full_response[len(prompt):-len(self.tokenizer.eos_token)].strip()
+        outputs = outputs[0][len(inputs['input_ids'][0]):]
+        response = self.tokenizer.decode(outputs, skip_special_tokens=True)
         
         # 计算token数量
-        response_tokens = self.tokenizer.encode(response, add_special_tokens=False)
-        token_count = len(response_tokens)
+        token_count = len(outputs)
         
         return {
             'response': response,
             'token_count': token_count,
             'input_ids': inputs['input_ids'],
-            'response_ids': outputs.sequences[0][len(inputs['input_ids'][0]):]
+            'response_ids': outputs
         }
     
     def compute_policy_loss(self, input_ids, response_ids, rewards, old_log_probs=None):
@@ -192,17 +191,7 @@ class SimpleGRPOTrainer:
         }
         
         for batch_idx, batch in enumerate(dataloader):
-            sample_prompt = format_math_chat_input(batch[0]['question'], self.tokenizer)
-            print(f"样例问题: {batch[0]['question']}")
-            print(f"样例prompt: {sample_prompt}")
-            sample_result = self.generate_response(sample_prompt)
-            print(f"样例问题: {batch[0]['question']}")
-            print(f"模型回答: {sample_result}")
-            print(f"正确答案: {extract_answer(batch[0]['answer'])}")
-            print("-" * 50)
 
-            exit()
-            
             # 执行训练步骤
             start_time = time.time()
             step_stats = self.train_step(batch)
@@ -233,8 +222,9 @@ class SimpleGRPOTrainer:
                 # 显示一个样例
                 if len(batch) > 0:
                     sample_prompt = format_math_chat_input(batch[0]['question'], self.tokenizer)
-                    sample_result = self.generate_response(sample_prompt)
                     print(f"样例问题: {batch[0]['question']}")
+                    print(f"样例prompt: {sample_prompt}")
+                    sample_result = self.generate_response(sample_prompt)
                     print(f"模型回答: {sample_result['response']}")
                     print(f"正确答案: {extract_answer(batch[0]['answer'])}")
                     print("-" * 50)
