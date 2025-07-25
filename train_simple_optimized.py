@@ -123,11 +123,13 @@ class SimpleGRPOTrainer:
         reward = compute_reward(predicted_answer, ground_truth)
         
         return {
+            'prompt': prompt,
             'response': response,
             'token_count': len(response_ids),
             'input_ids': inputs['input_ids'],
             'response_ids': response_ids,
             'predicted_answer': predicted_answer,
+            'ground_truth': ground_truth,
             'reward': reward
         }
     
@@ -172,6 +174,15 @@ class SimpleGRPOTrainer:
                 item['question'], 
                 extract_answer(item['answer'])
             )
+
+            if result['reward'] < 0:
+                print(f"prompt: {result['prompt']}")
+                print(f"response: {result['response']}")
+
+            print(f"predicted_answer: {result['predicted_answer']}")
+            print(f"ground_truth: {result['ground_truth']}")
+            print(f"reward: {result['reward']}")
+            print(f"token_count: {result['token_count']}")
             
             # 计算损失并更新
             loss, log_prob = self.compute_policy_loss(
