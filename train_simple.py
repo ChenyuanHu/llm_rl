@@ -17,7 +17,6 @@ from utils import (
     save_metrics,
     setup_model_and_tokenizer,
     MetricsTracker,
-    format_math_prompt,
     format_math_chat_input
 )
 

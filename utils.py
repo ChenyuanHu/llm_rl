@@ -73,49 +73,6 @@ def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
         )
         return chat_input
 
-def format_math_prompt(question: str) -> str:
-    """格式化数学问题prompt"""
-    return f"""请解决下面的数学问题，逐步思考并给出最终答案。
-
-问题: {question}
-
-解答: """
-
-def prepare_dataset_for_grpo(dataset: Dataset, tokenizer: AutoTokenizer, config: TrainingConfig) -> Dataset:
-    """为GRPO训练准备数据集"""
-    
-    def tokenize_function(examples):
-        prompts = [format_math_prompt(q) for q in examples['question']]
-        
-        # 对问题进行tokenize
-        model_inputs = tokenizer(
-            prompts,
-            truncation=True,
-            padding="max_length",
-            max_length=config.max_length,
-            return_tensors="pt"
-        )
-        
-        # 保存ground truth答案
-        model_inputs['ground_truth'] = [extract_answer(answer) for answer in examples['answer']]
-        model_inputs['question'] = examples['question']
-        model_inputs['full_answer'] = examples['answer']
-        
-        return model_inputs
-    
-    tokenized_dataset = dataset.map(
-        tokenize_function,
-        batched=True,
-        remove_columns=dataset.column_names
-    )
-    
-    return tokenized_dataset
-
-def count_tokens_in_response(text: str, tokenizer: AutoTokenizer) -> int:
-    """统计响应中的token数量"""
-    tokens = tokenizer.encode(text, add_special_tokens=False)
-    return len(tokens)
-
 def save_metrics(metrics: Dict[str, List[float]], output_dir: str):
     """保存训练指标"""
     os.makedirs(output_dir, exist_ok=True)
