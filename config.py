@@ -19,8 +19,8 @@ class TrainingConfig:
     learning_rate: float = 5e-6
     num_train_epochs: int = 3
     per_device_train_batch_size: int = 2  # Apple Silicon优化
-    gradient_accumulation_steps: int = 4
-    logging_steps: int = 10
+    gradient_accumulation_steps: int = 1
+    logging_steps: int = 1
     
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数

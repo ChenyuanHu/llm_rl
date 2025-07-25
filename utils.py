@@ -49,6 +49,21 @@ def load_math_dataset(config: TrainingConfig) -> Dataset:
     print(f"数据集加载完成，共{len(dataset)}条样本")
     return dataset
 
+def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
+        # 使用Qwen的对话格式
+        messages = [
+            {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。"},
+            {"role": "user", "content": question}
+        ]
+        
+        # 尝试使用chat template
+        chat_input = tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        return chat_input
+
 def format_math_prompt(question: str) -> str:
     """格式化数学问题prompt"""
     return f"""请解决下面的数学问题，逐步思考并给出最终答案。
@@ -91,30 +106,6 @@ def count_tokens_in_response(text: str, tokenizer: AutoTokenizer) -> int:
     """统计响应中的token数量"""
     tokens = tokenizer.encode(text, add_special_tokens=False)
     return len(tokens)
-
-def generate_response(model, tokenizer, prompt: str, config: TrainingConfig, max_new_tokens: int = 200) -> Tuple[str, int]:
-    """生成模型响应"""
-    device = config.get_device()
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id
-        )
-    
-    # 解码响应
-    full_response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    response = full_response[len(prompt):].strip()
-    
-    # 统计token数量
-    token_count = count_tokens_in_response(response, tokenizer)
-    
-    return response, token_count
 
 def save_metrics(metrics: Dict[str, List[float]], output_dir: str):
     """保存训练指标"""

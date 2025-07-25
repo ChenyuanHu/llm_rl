@@ -1,12 +1,12 @@
 import os
+import time
 import torch
 import numpy as np
-from datetime import datetime
-from typing import Dict, List
-from datasets import Dataset
+from typing import Dict
 from transformers import set_seed
 from torch.optim import AdamW
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
 from config import TrainingConfig
 from utils import (
@@ -16,7 +16,8 @@ from utils import (
     save_metrics,
     setup_model_and_tokenizer,
     MetricsTracker,
-    format_math_prompt
+    format_math_prompt,
+    format_math_chat_input
 )
 
 class SimpleGRPOTrainer:
@@ -62,7 +63,7 @@ class SimpleGRPOTrainer:
         self.dataset = raw_dataset
         print(f"数据集准备完成，训练样本数: {len(self.dataset)}")
         
-    def generate_response(self, prompt: str, max_new_tokens: int = 200) -> Dict:
+    def generate_response(self, prompt: str) -> Dict:
         """生成模型响应并计算概率"""
         inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=self.config.max_length).to(self.device)
         
@@ -70,18 +71,16 @@ class SimpleGRPOTrainer:
             # 生成响应
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=self.config.max_length,
                 do_sample=True,
                 temperature=0.7,
                 pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                return_dict_in_generate=True,
-                output_scores=True
+                eos_token_id=self.tokenizer.eos_token_id
             )
         
         # 解码响应
-        full_response = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
-        response = full_response[len(prompt):].strip()
+        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        response = full_response[len(prompt):-len(self.tokenizer.eos_token)].strip()
         
         # 计算token数量
         response_tokens = self.tokenizer.encode(response, add_special_tokens=False)
@@ -168,9 +167,21 @@ class SimpleGRPOTrainer:
         
         self.model.train()
         
-        # 准备batch数据
+        # 准备batch数据 - 使用datasets库的iter方法
         batch_size = self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps
-        num_batches = len(self.dataset) // batch_size
+        print(f"batch_size: {batch_size}")
+        
+        
+        # 创建DataLoader
+        dataloader = DataLoader(
+            self.dataset,
+            batch_size=batch_size,
+            shuffle=True,  # 每个epoch随机打乱
+            collate_fn=lambda batch: batch  # 保持原始格式
+        )
+        
+        num_batches = len(dataloader)
+        print(f"num_batches: {num_batches}")
         
         epoch_metrics = {
             'token_counts': [],
@@ -178,13 +189,22 @@ class SimpleGRPOTrainer:
             'losses': []
         }
         
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, len(self.dataset))
-            batch = [self.dataset[i] for i in range(start_idx, end_idx)]
+        for batch_idx, batch in enumerate(dataloader):
+            sample_prompt = format_math_chat_input(batch[0]['question'], self.tokenizer)
+            print(f"样例问题: {batch[0]['question']}")
+            print(f"样例prompt: {sample_prompt}")
+            sample_result = self.generate_response(sample_prompt)
+            print(f"样例问题: {batch[0]['question']}")
+            print(f"模型回答: {sample_result}")
+            print(f"正确答案: {extract_answer(batch[0]['answer'])}")
+            print("-" * 50)
+
+            exit()
             
             # 执行训练步骤
+            start_time = time.time()
             step_stats = self.train_step(batch)
+            cost_time = time.time() - start_time
             
             # 记录指标
             current_step = epoch * num_batches + batch_idx
@@ -205,14 +225,15 @@ class SimpleGRPOTrainer:
                       f"Batch {batch_idx + 1}/{num_batches}, "
                       f"Avg Tokens: {step_stats['avg_tokens']:.1f}, "
                       f"Avg Reward: {step_stats['avg_reward']:.3f}, "
-                      f"Loss: {step_stats['avg_loss']:.4f}")
+                      f"Loss: {step_stats['avg_loss']:.4f}, "
+                      f"Cost Time: {cost_time:.2f}s")
                 
                 # 显示一个样例
                 if len(batch) > 0:
-                    sample_prompt = format_math_prompt(batch[0]['question'])
-                    sample_result = self.generate_response(sample_prompt, max_new_tokens=100)
-                    print(f"样例问题: {batch[0]['question'][:100]}...")
-                    print(f"模型回答: {sample_result['response'][:150]}...")
+                    sample_prompt = format_math_chat_input(batch[0]['question'], self.tokenizer)
+                    sample_result = self.generate_response(sample_prompt)
+                    print(f"样例问题: {batch[0]['question']}")
+                    print(f"模型回答: {sample_result['response']}")
                     print(f"正确答案: {extract_answer(batch[0]['answer'])}")
                     print("-" * 50)
         
@@ -254,7 +275,7 @@ class SimpleGRPOTrainer:
             # 生成对话响应
             outputs = self.ref_model.generate(
                 **inputs,
-                max_new_tokens=1024,  # 减少生成长度
+                max_new_tokens=self.config.max_length,  # 减少生成长度
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.8,
@@ -278,7 +299,7 @@ class SimpleGRPOTrainer:
         self.setup_models()
         self.setup_dataset()
 
-        self.test_model()
+        # self.test_model()
 
         # 创建输出目录
         os.makedirs(self.config.output_dir, exist_ok=True)
