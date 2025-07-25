@@ -170,6 +170,7 @@ class SimpleGRPOTrainer:
                     reward
                 )
                 print(f"loss: {loss}")
+                print("-" * 50)
                 
                 # 反向传播
                 self.optimizer.zero_grad()
