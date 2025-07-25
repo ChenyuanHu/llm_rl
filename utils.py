@@ -22,6 +22,15 @@ def extract_answer(text: str) -> str:
     
     return ""
 
+def extract_predicted_answer(text: str) -> str:
+    """从文本中提取预测的数学答案"""
+    # 查找 \boxed{3500} 中的数字
+    match = re.search(r'\\boxed\{(\d+(?:\.\d+)?)\}', text)
+    if match:
+        return match.group(1).strip()
+    
+    return ""
+
 def is_correct_answer(predicted: str, ground_truth: str) -> bool:
     """检查答案是否正确"""
     try:
@@ -52,7 +61,7 @@ def load_math_dataset(config: TrainingConfig) -> Dataset:
 def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
         # 使用Qwen的对话格式
         messages = [
-            {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。"},
+            {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{3500}。"},
             {"role": "user", "content": question}
         ]
         

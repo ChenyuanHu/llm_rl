@@ -12,6 +12,7 @@ from config import TrainingConfig
 from utils import (
     load_math_dataset,
     extract_answer,
+    extract_predicted_answer,
     compute_reward,
     save_metrics,
     setup_model_and_tokenizer,
@@ -121,11 +122,11 @@ class SimpleGRPOTrainer:
         total_loss = 0
         total_reward = 0
         total_tokens = 0
-        
+
         for item in batch_data:
             question = item['question']
             ground_truth = extract_answer(item['answer'])
-            prompt = format_math_prompt(question)
+            prompt = format_math_chat_input(question, self.tokenizer)
             
             # 生成响应
             gen_result = self.generate_response(prompt)
@@ -133,16 +134,27 @@ class SimpleGRPOTrainer:
             token_count = gen_result['token_count']
             
             # 计算奖励
-            predicted_answer = extract_answer(response)
+            predicted_answer = extract_predicted_answer(response)
             reward = compute_reward(predicted_answer, ground_truth)
+
+            if reward < 0:
+                print(f"question: {question}")
+                print(f"response: {response}")
+
+            print(f"predicted_answer: {predicted_answer}")
+            print(f"ground_truth: {ground_truth}")
+            print(f"reward: {reward}")
+            print(f"token_count: {token_count}")
             
             # 计算损失
             if len(gen_result['response_ids']) > 0:
+                print("compute_policy_loss")
                 loss, log_prob = self.compute_policy_loss(
                     gen_result['input_ids'],
                     gen_result['response_ids'],
                     reward
                 )
+                print(f"loss: {loss}")
                 
                 # 反向传播
                 self.optimizer.zero_grad()
@@ -220,7 +232,7 @@ class SimpleGRPOTrainer:
                       f"Cost Time: {cost_time:.2f}s")
                 
                 # 显示一个样例
-                if len(batch) > 0:
+                if False and len(batch) > 0:
                     sample_prompt = format_math_chat_input(batch[0]['question'], self.tokenizer)
                     print(f"样例问题: {batch[0]['question']}")
                     print(f"样例prompt: {sample_prompt}")
