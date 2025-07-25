@@ -95,7 +95,7 @@ class SimpleGRPOTrainer:
             'response_ids': outputs
         }
     
-    def compute_policy_loss(self, input_ids, response_ids, rewards, old_log_probs=None):
+    def compute_policy_loss(self, input_ids, response_ids, rewards):
         """计算策略损失"""
         # 准备输入
         full_ids = torch.cat([input_ids, response_ids.unsqueeze(0)], dim=1)
