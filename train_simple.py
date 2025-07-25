@@ -46,9 +46,9 @@ class SimpleGRPOTrainer:
         self.model.to(self.device)
         
         # 创建参考模型（用于KL散度计算）
-        self.ref_model, _ = setup_model_and_tokenizer(self.config)
-        self.ref_model.to(self.device)
-        self.ref_model.eval()  # 参考模型保持eval模式
+        #self.ref_model, _ = setup_model_and_tokenizer(self.config)
+        #self.ref_model.to(self.device)
+        #self.ref_model.eval()  # 参考模型保持eval模式
         
         # 设置优化器
         self.optimizer = AdamW(
@@ -293,7 +293,7 @@ class SimpleGRPOTrainer:
         
         with torch.no_grad():
             # 生成对话响应
-            outputs = self.ref_model.generate(
+            outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=self.config.max_length,  # 减少生成长度
                 do_sample=True,

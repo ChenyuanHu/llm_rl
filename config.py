@@ -12,7 +12,7 @@ class TrainingConfig:
     dataset_name: str = "openai/gsm8k"
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
-    max_length: int = 4096
+    max_length: int = 1024
     max_samples: Optional[int] = 1000  # 为了快速验证，限制样本数量
     
     # GRPO训练配置
