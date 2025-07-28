@@ -123,35 +123,21 @@ class SimpleGRPOTrainer:
         
         # 批量生成响应
         with torch.no_grad():
-            try:
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.config.max_new_tokens,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_k=50,
-                    top_p=0.9,
-                    repetition_penalty=1.1,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
-                )
-            except RuntimeError as e:
-                if "probability tensor" in str(e):
-                    print("警告: 采样遇到数值问题，切换到贪心搜索...")
-                    # 回退到贪心搜索
-                    outputs = self.model.generate(
-                        **inputs,
-                        max_new_tokens=self.config.max_new_tokens,
-                        do_sample=False,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                        eos_token_id=self.tokenizer.eos_token_id
-                    )
-                else:
-                    raise e
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=self.config.max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                top_k=50,
+                top_p=0.9,
+                repetition_penalty=1.1,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
+            )
         
         # 处理批量结果
         results = []
-        input_lengths = inputs['attention_mask'].sum(dim=1).cpu().numpy()
+        input_lengths = inputs['input_ids'].shape[1]
         
         for i in range(len(batch_data)):
             # 提取响应部分
