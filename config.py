@@ -13,7 +13,7 @@ class TrainingConfig:
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
     max_length: int = 1024
-    max_samples: Optional[int] = 1000  # 为了快速验证，限制样本数量
+    max_samples: Optional[int] = 10  # 为了快速验证，限制样本数量
     
     # GRPO训练配置
     learning_rate: float = 5e-6
