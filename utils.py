@@ -59,19 +59,19 @@ def load_math_dataset(config: TrainingConfig) -> Dataset:
     return dataset
 
 def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
-        # 使用Qwen的对话格式
-        messages = [
-            {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{最终答案}。"},
-            {"role": "user", "content": question}
-        ]
-        
-        # 尝试使用chat template
-        chat_input = tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-        return chat_input
+    # 使用Qwen的对话格式
+    messages = [
+        {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{最终答案}。"},
+        {"role": "user", "content": question}
+    ]
+    
+    # 尝试使用chat template
+    chat_input = tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+    )
+    return chat_input
 
 def save_metrics(metrics: Dict[str, List[float]], output_dir: str):
     """保存训练指标"""
