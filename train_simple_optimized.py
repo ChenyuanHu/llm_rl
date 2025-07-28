@@ -238,8 +238,9 @@ class SimpleGRPOTrainer:
                 step_stats['avg_reward'], step_stats['avg_loss']
             )
             
-            for key in epoch_metrics:
-                epoch_metrics[key].append(step_stats[f"avg_{key[:-1]}"])
+            epoch_metrics['token_counts'].append(step_stats['avg_tokens'])
+            epoch_metrics['rewards'].append(step_stats['avg_reward'])
+            epoch_metrics['losses'].append(step_stats['avg_loss'])
             
             # 日志输出
             if (batch_idx + 1) % self.config.logging_steps == 0:
