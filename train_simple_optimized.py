@@ -38,6 +38,7 @@ class TrainingUtils:
               f"Tokens: {stats['avg_tokens']:.1f}, "
               f"Reward: {stats['avg_reward']:.3f}, "
               f"Loss: {stats['avg_loss']:.4f}, "
+              f"LogProb: {stats.get('avg_log_prob', 0):.3f}, "
               f"Time: {cost_time:.2f}s")
 
     @staticmethod
@@ -95,121 +96,232 @@ class SimpleGRPOTrainer:
         
         print(f"设置完成 - 模型已加载，数据集: {len(self.dataset)}条样本")
         
-    def generate_and_evaluate(self, question: str, ground_truth: str) -> Dict:
-        """生成响应并评估 - 合并相关操作"""
-        # 准备输入
-        prompt = format_math_chat_input(question, self.tokenizer)
-        inputs = self.tokenizer(prompt, return_tensors="pt", 
-                               truncation=True, max_length=self.config.max_length).to(self.device)
+    def generate_and_evaluate_batch(self, batch_data: List[Dict]) -> List[Dict]:
+        """批量生成响应并评估"""
+        # 准备批量输入
+        prompts = []
+        questions = []
+        ground_truths = []
         
-        # 生成响应
+        for item in batch_data:
+            question = item['question']
+            ground_truth = extract_answer(item['answer'])
+            prompt = format_math_chat_input(question, self.tokenizer)
+            
+            prompts.append(prompt)
+            questions.append(question)
+            ground_truths.append(ground_truth)
+        
+        # 批量tokenize
+        inputs = self.tokenizer(
+            prompts, 
+            return_tensors="pt", 
+            padding=True,
+            truncation=True, 
+            max_length=self.config.max_length
+        ).to(self.device)
+        
+        # 批量生成响应
         with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.config.max_length,
-                do_sample=True,
-                temperature=0.7,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id
-            )
+            try:
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=min(self.config.max_length, 128),  # 限制生成长度
+                    do_sample=True,
+                    temperature=0.7,
+                    top_k=50,
+                    top_p=0.9,
+                    repetition_penalty=1.1,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+            except RuntimeError as e:
+                if "probability tensor" in str(e):
+                    print("警告: 采样遇到数值问题，切换到贪心搜索...")
+                    # 回退到贪心搜索
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=min(self.config.max_length, 128),
+                        do_sample=False,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id
+                    )
+                else:
+                    raise e
         
-        # 提取和解码响应
-        input_length = inputs['input_ids'].shape[1]
-        response_ids = outputs[0][input_length:]
-        response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+        # 处理批量结果
+        results = []
+        input_lengths = inputs['attention_mask'].sum(dim=1).cpu().numpy()
         
-        # 评估响应
-        predicted_answer = extract_predicted_answer(response)
-        reward = compute_reward(predicted_answer, ground_truth)
-        
-        return {
-            'prompt': prompt,
-            'response': response,
-            'token_count': len(response_ids),
-            'input_ids': inputs['input_ids'],
-            'response_ids': response_ids,
-            'predicted_answer': predicted_answer,
-            'ground_truth': ground_truth,
-            'reward': reward
-        }
+        for i in range(len(batch_data)):
+            # 提取响应部分
+            input_length = input_lengths[i]
+            response_ids = outputs[i][input_length:]
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            
+            # 评估响应
+            predicted_answer = extract_predicted_answer(response)
+            reward = compute_reward(predicted_answer, ground_truths[i])
+            
+            results.append({
+                'prompt': prompts[i],
+                'response': response,
+                'token_count': len(response_ids),
+                'input_ids': inputs['input_ids'][i:i+1],  # 保持batch维度
+                'response_ids': response_ids,
+                'predicted_answer': predicted_answer,
+                'ground_truth': ground_truths[i],
+                'reward': reward
+            })
+            
+        return results
     
-    def compute_policy_loss(self, input_ids, response_ids, reward):
-        """计算策略损失 - 简化版本"""
-        if len(response_ids) == 0:
+    def compute_grpo_loss(self, batch_results: List[Dict]):
+        """计算GRPO损失 - 真正的Group Relative Policy Optimization"""
+        if len(batch_results) == 0:
             return None, 0.0
             
-        # 确保形状正确
-        if response_ids.dim() == 1:
-            response_ids = response_ids.unsqueeze(0)
+        # 准备批量数据
+        all_input_ids = []
+        all_response_ids = []
+        all_rewards = []
         
-        # 前向传播
-        full_ids = torch.cat([input_ids, response_ids], dim=1)
-        outputs = self.model(full_ids)
+        for result in batch_results:
+            if len(result['response_ids']) > 0:
+                all_input_ids.append(result['input_ids'].squeeze(0))
+                all_response_ids.append(result['response_ids'])
+                all_rewards.append(result['reward'])
         
-        # 计算损失
-        prompt_length = input_ids.shape[1]
-        response_length = response_ids.shape[1]
+        if len(all_rewards) == 0:
+            return None, 0.0
+            
+        # 转换为tensor
+        rewards = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
         
-        # 提取响应部分的logits并计算概率
-        response_logits = outputs.logits[:, prompt_length-1:prompt_length+response_length-1]
-        log_probs = F.log_softmax(response_logits, dim=-1)
-        selected_log_probs = log_probs[0].gather(1, response_ids[0].unsqueeze(1)).squeeze()
+        # GRPO核心：计算group内的relative advantage
+        if len(rewards) > 1:
+            # 方法1: 标准化advantage (z-score)
+            reward_mean = rewards.mean()
+            reward_std = rewards.std() + 1e-8  # 避免除零
+            z_score_advantages = (rewards - reward_mean) / reward_std
+            
+            # 方法2: 排名基础的advantage (更稳定)
+            _, reward_indices = torch.sort(rewards, descending=True)
+            rank_advantages = torch.zeros_like(rewards)
+            for i, idx in enumerate(reward_indices):
+                # 将排名转换为[-1, 1]范围的advantage
+                rank_advantages[idx] = 2.0 * (len(rewards) - 1 - i) / (len(rewards) - 1) - 1.0
+            
+            # 结合两种方法：使用排名为主，z-score为辅
+            relative_advantages = 0.7 * rank_advantages + 0.3 * z_score_advantages
+        else:
+            # 单个样本情况，直接使用reward
+            relative_advantages = rewards
         
-        # 策略损失
-        current_log_prob = selected_log_probs.mean()
-        policy_loss = -current_log_prob * reward
+        # 计算每个样本的log probability
+        total_loss = 0
+        total_log_prob = 0
+        valid_samples = 0
         
-        return policy_loss, current_log_prob.item()
+        for i, (input_ids, response_ids, advantage) in enumerate(
+            zip(all_input_ids, all_response_ids, relative_advantages)
+        ):
+            # 确保形状正确
+            if response_ids.dim() == 1:
+                response_ids = response_ids.unsqueeze(0)
+            if input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+                
+            # 前向传播
+            full_ids = torch.cat([input_ids, response_ids], dim=1)
+            outputs = self.model(full_ids)
+            
+            # 计算响应部分的log probabilities
+            prompt_length = input_ids.shape[1]
+            response_length = response_ids.shape[1]
+            
+            # 提取响应部分的logits
+            response_logits = outputs.logits[:, prompt_length-1:prompt_length+response_length-1]
+            log_probs = F.log_softmax(response_logits, dim=-1)
+            
+            # 计算选中token的log probabilities
+            selected_log_probs = log_probs[0].gather(1, response_ids[0].unsqueeze(1)).squeeze()
+            
+            # 平均log probability
+            avg_log_prob = selected_log_probs.mean()
+            
+            # GRPO损失：使用relative advantage加权
+            sample_loss = -avg_log_prob * advantage
+            
+            total_loss += sample_loss
+            total_log_prob += avg_log_prob.item()
+            valid_samples += 1
+        
+        if valid_samples == 0:
+            return None, 0.0
+            
+        # 返回平均损失
+        avg_loss = total_loss / valid_samples
+        avg_log_prob = total_log_prob / valid_samples
+        
+        # 调试信息：显示GRPO的relative advantages分布
+        if len(rewards) > 1:
+            print(f"  GRPO Group Stats - Rewards: [{rewards.min():.3f}, {rewards.max():.3f}], "
+                  f"Advantages: [{relative_advantages.min():.3f}, {relative_advantages.max():.3f}]")
+        
+        return avg_loss, avg_log_prob
     
     def train_step(self, batch_data) -> Dict:
-        """执行一个训练步骤 - 优化版本"""
-        total_loss = 0
-        total_reward = 0
-        total_tokens = 0
-        valid_samples = 0
-
-        for item in batch_data:
-            # 生成和评估
-            result = self.generate_and_evaluate(
-                item['question'], 
-                extract_answer(item['answer'])
-            )
-
-            if result['reward'] < 0:
-                print(f"prompt: {result['prompt']}")
-                print(f"response: {result['response']}")
-
-            print(f"predicted_answer: {result['predicted_answer']}")
-            print(f"ground_truth: {result['ground_truth']}")
-            print(f"reward: {result['reward']}")
-            print(f"token_count: {result['token_count']}")
+        """执行一个训练步骤 - 批处理GPU优化版本"""
+        # 批量生成和评估
+        batch_results = self.generate_and_evaluate_batch(batch_data)
+        
+        # 计算统计信息
+        total_reward = sum(result['reward'] for result in batch_results)
+        total_tokens = sum(result['token_count'] for result in batch_results)
+        batch_size = len(batch_results)
+        
+        # 打印详细信息（抽样显示）
+        negative_count = sum(1 for r in batch_results if r['reward'] < 0)
+        sample_displayed = 0
+        max_display = 3  # 最多显示3个样本的详细信息
+        
+        for i, result in enumerate(batch_results):
+            should_display = (result['reward'] < 0 or sample_displayed < 1) and sample_displayed < max_display
+            if should_display:
+                print(f"Sample {i+1}/{batch_size}:")
+                print(f"  predicted_answer: {result['predicted_answer']}")
+                print(f"  ground_truth: {result['ground_truth']}")
+                print(f"  reward: {result['reward']}")
+                print(f"  token_count: {result['token_count']}")
+                if result['reward'] < 0:
+                    print(f"  prompt: {result['prompt'][:100]}...")
+                    print(f"  response: {result['response'][:100]}...")
+                sample_displayed += 1
+        
+        if negative_count > 0:
+            print(f"  负奖励样本数: {negative_count}/{batch_size}")
+        
+        # 使用GRPO计算损失
+        loss, avg_log_prob = self.compute_grpo_loss(batch_results)
+        
+        if loss is not None:
+            # 反向传播
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+            self.optimizer.step()
             
-            # 计算损失并更新
-            loss, log_prob = self.compute_policy_loss(
-                result['input_ids'],
-                result['response_ids'], 
-                result['reward']
-            )
-            
-            if loss is not None:
-                # 反向传播
-                self.optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
-                self.optimizer.step()
-                
-                total_loss += loss.item()
-                valid_samples += 1
-            
-            total_reward += result['reward']
-            total_tokens += result['token_count']
+            loss_value = loss.item()
+        else:
+            loss_value = 0.0
         
         # 返回平均统计
-        batch_size = len(batch_data)
         return {
-            'avg_loss': total_loss / max(valid_samples, 1),
+            'avg_loss': loss_value,
             'avg_reward': total_reward / batch_size,
-            'avg_tokens': total_tokens / batch_size
+            'avg_tokens': total_tokens / batch_size,
+            'avg_log_prob': avg_log_prob if loss is not None else 0.0
         }
         
     def train_epoch(self, epoch: int) -> Dict:
@@ -241,6 +353,10 @@ class SimpleGRPOTrainer:
             epoch_metrics['token_counts'].append(step_stats['avg_tokens'])
             epoch_metrics['rewards'].append(step_stats['avg_reward'])
             epoch_metrics['losses'].append(step_stats['avg_loss'])
+            if 'avg_log_prob' in step_stats:
+                if 'log_probs' not in epoch_metrics:
+                    epoch_metrics['log_probs'] = []
+                epoch_metrics['log_probs'].append(step_stats['avg_log_prob'])
             
             # 日志输出
             if (batch_idx + 1) % self.config.logging_steps == 0:
