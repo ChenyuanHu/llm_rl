@@ -43,7 +43,7 @@ def is_correct_answer(predicted: str, ground_truth: str) -> bool:
 def compute_reward(predicted_answer: str, ground_truth: str) -> float:
     """计算reward分数"""
     if is_correct_answer(predicted_answer, ground_truth):
-        return 1.0
+        return 10.0
     else:
         return -0.1  # 轻微惩罚错误答案
 

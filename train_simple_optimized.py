@@ -127,7 +127,7 @@ class SimpleGRPOTrainer:
                 **inputs,
                 max_new_tokens=self.config.max_new_tokens,
                 do_sample=True,
-                temperature=0.7,
+                temperature=1.0,
                 top_k=50,
                 top_p=0.9,
                 repetition_penalty=1.1,
@@ -146,7 +146,7 @@ class SimpleGRPOTrainer:
             
             # 评估响应
             predicted_answer = extract_predicted_answer(response)
-            reward = compute_reward(predicted_answer, ground_truths[i])
+            reward = compute_reward(predicted_answer, ground_truths[i]) - (0.005 * len(response_ids))
             
             results.append({
                 'prompt': prompts[i],
