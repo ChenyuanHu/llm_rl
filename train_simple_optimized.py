@@ -137,11 +137,10 @@ class SimpleGRPOTrainer:
         
         # 处理批量结果
         results = []
-        input_lengths = inputs['input_ids'].shape[1]
+        input_length = inputs['input_ids'].shape[1]
         
         for i in range(len(batch_data)):
             # 提取响应部分
-            input_length = input_lengths[i]
             response_ids = outputs[i][input_length:]
             response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
             
@@ -212,6 +211,7 @@ class SimpleGRPOTrainer:
         for i, (input_ids, response_ids, advantage) in enumerate(
             zip(all_input_ids, all_response_ids, relative_advantages)
         ):
+            print(f"processing sample {i}")
             # 确保形状正确
             if response_ids.dim() == 1:
                 response_ids = response_ids.unsqueeze(0)
@@ -257,10 +257,11 @@ class SimpleGRPOTrainer:
         
         return avg_loss, avg_log_prob
     
-    def train_step(self, batch_data) -> Dict:
+    def train_group(self, group_data) -> Dict:
         """执行一个训练步骤 - 批处理GPU优化版本"""
         # 批量生成和评估
-        batch_results = self.generate_and_evaluate_batch(batch_data)
+        batch_results = self.generate_and_evaluate_batch(group_data)
+        # print(f"batch_results: {batch_results}")
         
         # 计算统计信息
         total_reward = sum(result['reward'] for result in batch_results)
@@ -270,10 +271,10 @@ class SimpleGRPOTrainer:
         # 打印详细信息（抽样显示）
         negative_count = sum(1 for r in batch_results if r['reward'] < 0)
         sample_displayed = 0
-        max_display = 3  # 最多显示3个样本的详细信息
+        max_display = 0  # 最多显示3个样本的详细信息
         
         for i, result in enumerate(batch_results):
-            should_display = (result['reward'] < 0 or sample_displayed < 1) and sample_displayed < max_display
+            should_display = sample_displayed < max_display
             if should_display:
                 print(f"Sample {i+1}/{batch_size}:")
                 print(f"  predicted_answer: {result['predicted_answer']}")
@@ -309,6 +310,12 @@ class SimpleGRPOTrainer:
             'avg_tokens': total_tokens / batch_size,
             'avg_log_prob': avg_log_prob if loss is not None else 0.0
         }
+
+    def sample_group(self, batch_data) -> List[Dict]:
+        """采样一个group"""
+        assert len(batch_data) == 1
+        
+        return [batch_data[0]] * self.config.group_size
         
     def train_epoch(self, epoch: int) -> Dict:
         """训练一个epoch - 简化版本"""
@@ -326,7 +333,8 @@ class SimpleGRPOTrainer:
         for batch_idx, batch in enumerate(dataloader):
             # 执行训练步骤
             start_time = time.time()
-            step_stats = self.train_step(batch)
+            group = self.sample_group(batch)
+            step_stats = self.train_group(group)
             cost_time = time.time() - start_time
             
             # 记录指标

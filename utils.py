@@ -61,7 +61,8 @@ def load_math_dataset(config: TrainingConfig) -> Dataset:
 def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
     # 使用Qwen的对话格式
     messages = [
-        {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{最终答案}。"},
+        # {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{最终答案}。"},
+        {"role": "system", "content": "你是一个数学助手，请简短的思考，并且直接给出最终答案。最终答案放在最后并放在\\boxed{}中。"},
         {"role": "user", "content": question}
     ]
     

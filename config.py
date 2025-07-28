@@ -13,19 +13,20 @@ class TrainingConfig:
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
     max_length: int = 1024
-    max_new_tokens: int = 128
-    max_samples: Optional[int] = 10  # 为了快速验证，限制样本数量
+    max_new_tokens: int = 1024
+    max_samples: Optional[int] = 100  # 为了快速验证，限制样本数量
     
     # GRPO训练配置
     learning_rate: float = 5e-6
-    num_train_epochs: int = 3
-    per_device_train_batch_size: int = 2  # Apple Silicon优化
+    num_train_epochs: int = 1
+    per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     logging_steps: int = 1
     
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数
     grpo_epochs: int = 1  # 每个batch的GRPO更新次数
+    group_size: int = 4
     
     # 优化器配置
     weight_decay: float = 0.01
