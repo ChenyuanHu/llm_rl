@@ -203,35 +203,65 @@ class SimpleGRPOTrainer:
             # 单个样本情况，直接使用reward
             relative_advantages = rewards
         
-        # 计算每个样本的log probability
-        total_loss = 0
-        total_log_prob = 0
-        valid_samples = 0
+        # 批处理模型调用 - GPU优化
+        # 1. 准备批量数据
+        batch_full_ids = []
+        batch_prompt_lengths = []
+        batch_response_lengths = []
         
-        for i, (input_ids, response_ids, advantage) in enumerate(
-            zip(all_input_ids, all_response_ids, relative_advantages)
-        ):
-            print(f"processing sample {i}")
+        for input_ids, response_ids in zip(all_input_ids, all_response_ids):
             # 确保形状正确
             if response_ids.dim() == 1:
                 response_ids = response_ids.unsqueeze(0)
             if input_ids.dim() == 1:
                 input_ids = input_ids.unsqueeze(0)
                 
-            # 前向传播
             full_ids = torch.cat([input_ids, response_ids], dim=1)
-            outputs = self.model(full_ids)
+            batch_full_ids.append(full_ids.squeeze(0))  # 移除batch维度用于padding
+            batch_prompt_lengths.append(input_ids.shape[1])
+            batch_response_lengths.append(response_ids.shape[1])
+        
+        # 2. 对不同长度的序列进行padding
+        max_length = max(seq.shape[0] for seq in batch_full_ids)
+        padded_batch = torch.full(
+            (len(batch_full_ids), max_length), 
+            self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
+            dtype=torch.long,
+            device=self.device
+        )
+        
+        # 创建attention mask
+        attention_mask = torch.zeros_like(padded_batch)
+        
+        for i, seq in enumerate(batch_full_ids):
+            seq_len = seq.shape[0]
+            padded_batch[i, :seq_len] = seq
+            attention_mask[i, :seq_len] = 1
+        
+        # 3. 批量前向传播 - 一次性处理所有样本
+        print(f"批量处理 {len(batch_full_ids)} 个样本，最大长度: {max_length}")
+        outputs = self.model(padded_batch, attention_mask=attention_mask)
+        
+        # 4. 计算每个样本的loss
+        total_loss = 0
+        total_log_prob = 0
+        valid_samples = 0
+        
+        for i, (prompt_length, response_length, advantage) in enumerate(
+            zip(batch_prompt_lengths, batch_response_lengths, relative_advantages)
+        ):
+            # 提取该样本的响应部分logits
+            sample_logits = outputs.logits[i]
+            response_start = prompt_length - 1
+            response_end = prompt_length + response_length - 1
+            response_logits = sample_logits[response_start:response_end]
             
-            # 计算响应部分的log probabilities
-            prompt_length = input_ids.shape[1]
-            response_length = response_ids.shape[1]
+            # 提取该样本的响应token ids
+            response_tokens = padded_batch[i][prompt_length:prompt_length + response_length]
             
-            # 提取响应部分的logits
-            response_logits = outputs.logits[:, prompt_length-1:prompt_length+response_length-1]
+            # 计算log probabilities
             log_probs = F.log_softmax(response_logits, dim=-1)
-            
-            # 计算选中token的log probabilities
-            selected_log_probs = log_probs[0].gather(1, response_ids[0].unsqueeze(1)).squeeze()
+            selected_log_probs = log_probs.gather(1, response_tokens.unsqueeze(1)).squeeze()
             
             # 平均log probability
             avg_log_prob = selected_log_probs.mean()
