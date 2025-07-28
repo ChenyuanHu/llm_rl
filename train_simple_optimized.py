@@ -126,7 +126,7 @@ class SimpleGRPOTrainer:
             try:
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=min(self.config.max_length, 128),  # 限制生成长度
+                    max_new_tokens=self.config.max_new_tokens,
                     do_sample=True,
                     temperature=0.7,
                     top_k=50,
@@ -141,7 +141,7 @@ class SimpleGRPOTrainer:
                     # 回退到贪心搜索
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=min(self.config.max_length, 128),
+                        max_new_tokens=self.config.max_new_tokens,
                         do_sample=False,
                         pad_token_id=self.tokenizer.eos_token_id,
                         eos_token_id=self.tokenizer.eos_token_id
