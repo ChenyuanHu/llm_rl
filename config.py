@@ -5,19 +5,24 @@ from typing import Optional
 @dataclass
 class TrainingConfig:
     # 模型配置
-    model_name: str = "Qwen/Qwen3-0.6B"
+    model_name: str = "Qwen/Qwen2.5-0.5B"
     trust_remote_code: bool = True
     
     # 数据集配置
-    dataset_name: str = "openai/gsm8k"
+    dataset_name: str = "custom_math" # "openai/gsm8k"
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
-    max_length: int = 1024
-    max_new_tokens: int = 1024
-    max_samples: Optional[int] = 100  # 为了快速验证，限制样本数量
+    max_length: int = 512  # 减少长度，适合简单的加减法
+    max_new_tokens: int = 128  # 减少生成长度，适合简单答案
+    max_samples: Optional[int] = 200  # 增加样本数量用于简单数学训练
+    
+    # 自定义数学数据集配置
+    custom_math_size: int = 500  # 自定义数据集大小
+    max_number: int = 10  # 数字范围：0-10
     
     # GRPO训练配置
-    learning_rate: float = 5e-6
+    # learning_rate: float = 5e-6
+    learning_rate: float = 5e-6  # 稍微提高学习率，适合简单任务
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
@@ -26,7 +31,7 @@ class TrainingConfig:
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数
     grpo_epochs: int = 1  # 每个batch的GRPO更新次数
-    group_size: int = 4
+    group_size: int = 8
     clip_epsilon: float = 0.2  # PPO clipping参数
     kl_coeff: float = 0.01  # KL散度正则化系数
     

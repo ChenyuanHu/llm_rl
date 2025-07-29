@@ -135,10 +135,10 @@ class SimpleGRPOTrainer:
                 **inputs,
                 max_new_tokens=self.config.max_new_tokens,
                 do_sample=True,
-                temperature=1.0,
-                top_k=50,
-                top_p=0.9,
-                repetition_penalty=1.1,
+                temperature=0.5,
+                # top_k=10,
+                # top_p=0.9,
+                # repetition_penalty=1.1,
                 pad_token_id=self.tokenizer.eos_token_id,
                 eos_token_id=self.tokenizer.eos_token_id
             )
@@ -167,7 +167,8 @@ class SimpleGRPOTrainer:
             # 评估响应
             predicted_answer = extract_predicted_answer(response)
             # 优化奖励计算 - 使用tensor长度而非Python len()
-            token_penalty = 0.005 * response_ids.shape[0]
+            # token_penalty = 0.005 * response_ids.shape[0]  # 过长思考惩罚
+            token_penalty = 0
             reward = compute_reward(predicted_answer, ground_truths[i]) - token_penalty
             
             results.append({
@@ -374,8 +375,7 @@ class SimpleGRPOTrainer:
                     print(f"  response: {result['response'][:100]}...")
                 sample_displayed += 1
         
-        if negative_count > 0:
-            print(f"  负奖励样本数: {negative_count}/{batch_size}")
+        print(f"负奖励样本数: {negative_count}/{batch_size}")
         
         # 使用GRPO计算损失
         loss, avg_log_prob = self.compute_grpo_loss(batch_results)

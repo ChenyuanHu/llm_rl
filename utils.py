@@ -1,6 +1,7 @@
 import re
 import torch
 import numpy as np
+import random
 from typing import List, Dict, Tuple
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -47,23 +48,77 @@ def compute_reward(predicted_answer: str, ground_truth: str) -> float:
     else:
         return -0.1  # 轻微惩罚错误答案
 
+def generate_custom_math_problems(config: TrainingConfig) -> List[Dict]:
+    """生成自定义的十以内加减法问题"""
+    problems = []
+    random.seed(config.seed)
+    
+    for _ in range(config.custom_math_size):
+        # 随机选择操作
+        operation = random.choice(['+', '-'])
+        
+        if operation == '+':
+            # 加法：确保结果不超过config.max_number
+            a = random.randint(0, config.max_number)
+            b = random.randint(0, config.max_number - a)
+            result = a + b
+            question = f"{a} + {b} = ?"
+            
+        elif operation == '-':
+            # 减法：确保结果非负
+            result = random.randint(0, config.max_number)
+            a = random.randint(result, config.max_number)
+            b = a - result
+            question = f"{a} - {b} = ?"
+        
+        # 创建答案格式（模拟GSM8K的格式）
+        calculation = question.replace(" = ?", "")
+        answer = f"这是一个简单的{operation}法计算。\n{calculation} = {result}\n#### {result}"
+        
+        problems.append({
+            'question': question,
+            'answer': answer,
+            'ground_truth': str(result)
+        })
+    
+    return problems
+
 def load_math_dataset(config: TrainingConfig) -> Dataset:
-    """加载数学数据集"""
-    print("正在加载GSM8K数据集...")
-    dataset = load_dataset(config.dataset_name, config.dataset_config, split=config.dataset_split)
+    """加载数学数据集 - 支持自定义数据集"""
+    if config.dataset_name == "custom_math":
+        print("正在生成自定义加减法数据集...")
+        problems = generate_custom_math_problems(config)
+        
+        # 转换为Dataset格式
+        dataset_dict = {
+            'question': [p['question'] for p in problems],
+            'answer': [p['answer'] for p in problems]
+        }
+        dataset = Dataset.from_dict(dataset_dict)
+        
+        if config.max_samples:
+            dataset = dataset.select(range(min(config.max_samples, len(dataset))))
+        
+        print(f"自定义数据集生成完成，共{len(dataset)}条样本")
+        return dataset
     
-    if config.max_samples:
-        dataset = dataset.select(range(min(config.max_samples, len(dataset))))
-    
-    print(f"数据集加载完成，共{len(dataset)}条样本")
-    return dataset
+    else:
+        print("正在加载GSM8K数据集...")
+        dataset = load_dataset(config.dataset_name, config.dataset_config, split=config.dataset_split)
+        
+        if config.max_samples:
+            dataset = dataset.select(range(min(config.max_samples, len(dataset))))
+        
+        print(f"数据集加载完成，共{len(dataset)}条样本")
+        return dataset
 
 def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
     # 使用Qwen的对话格式
     messages = [
         # {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{最终答案}。"},
-        {"role": "system", "content": "你是一个数学助手，请简短的思考，并且直接给出最终答案。最终答案放在最后并放在\\boxed{}中。"},
-        {"role": "user", "content": question}
+        # {"role": "system", "content": "你是一个数学助手，请简短的思考，并且直接给出最终答案。最终答案放在最后并放在\\boxed{}中。"},
+        # {"role": "user", "content": question}
+        {"role": "user", "content": "你是一个数学助手，请简短的思考，并且直接给出最终答案。最终答案放在最后并放在\\boxed{}中。" + question}
     ]
     
     # 尝试使用chat template
