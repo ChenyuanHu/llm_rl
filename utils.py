@@ -25,10 +25,11 @@ def extract_answer(text: str) -> str:
 
 def extract_predicted_answer(text: str) -> str:
     """从文本中提取预测的数学答案"""
-    # 查找 \boxed{3500} 中的数字
-    match = re.findall(r'\\boxed\{(\d+(?:\.\d+)?)\}', text)
+    # 查找严格以 \boxed{} 结尾的答案
+    # 使用 $ 确保 \boxed{} 在文本末尾
+    match = re.search(r'\\boxed\{(\d+(?:\.\d+)?)\}[.|。]?\s*$', text)
     if match:
-        return match[-1].strip()
+        return match.group(1).strip()
     
     return ""
 
@@ -118,7 +119,7 @@ def format_math_chat_input(question: str, tokenizer: AutoTokenizer) -> str:
         # {"role": "system", "content": "你是一个专业的数学助手，擅长解决各种数学问题。请逐步思考并给出准确答案。最终答案放在最后并放在\\boxed{}中，如\\boxed{最终答案}。"},
         # {"role": "system", "content": "你是一个数学助手，请简短的思考，并且直接给出最终答案。最终答案放在最后并放在\\boxed{}中。"},
         # {"role": "user", "content": question}
-        {"role": "user", "content": "你是一个数学助手，请简短的思考，并且直接给出最终答案。最终答案放在最后并放在\\boxed{}中。" + question}
+        {"role": "user", "content": "你是一个数学助手，请简短的思考，并且给出最终答案。最终答案放在最后并放在\\boxed{}中。问题是：" + question}
     ]
     
     # 尝试使用chat template
