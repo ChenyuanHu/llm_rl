@@ -105,7 +105,7 @@ class SimpleGRPOTrainer:
         print(f"设置完成 - 模型已加载，数据集: {len(self.dataset)}条样本")
         
     def generate_and_evaluate_batch(self, batch_data: List[Dict]) -> List[Dict]:
-        """批量生成响应并评估"""
+        """批量生成响应并评估 - 优化版本"""
         # 准备批量输入
         prompts = []
         questions = []
@@ -150,16 +150,30 @@ class SimpleGRPOTrainer:
         for i in range(len(batch_data)):
             # 提取响应部分
             response_ids = outputs[i][input_length:]
-            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            
+            # 安全的EOS token查找 - 使用torch操作而非Python list
+            eos_mask = (response_ids == self.tokenizer.eos_token_id)
+            if eos_mask.any():
+                # 找到第一个EOS token的位置
+                eos_positions = torch.nonzero(eos_mask, as_tuple=False)
+                if len(eos_positions) > 0:
+                    last_eos_index = eos_positions[0].item()
+                    response_ids = response_ids[:last_eos_index]
+            # 如果没有EOS token，保持原始长度（这是正常情况）
+            
+            # 解码响应
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=False)
             
             # 评估响应
             predicted_answer = extract_predicted_answer(response)
-            reward = compute_reward(predicted_answer, ground_truths[i]) - (0.005 * len(response_ids))
+            # 优化奖励计算 - 使用tensor长度而非Python len()
+            token_penalty = 0.005 * response_ids.shape[0]
+            reward = compute_reward(predicted_answer, ground_truths[i]) - token_penalty
             
             results.append({
                 'prompt': prompts[i],
                 'response': response,
-                'token_count': len(response_ids),
+                'token_count': response_ids.shape[0],  # 使用tensor.shape[0]而非len()
                 'input_ids': inputs['input_ids'][i:i+1],  # 保持batch维度
                 'response_ids': response_ids,
                 'predicted_answer': predicted_answer,
@@ -200,6 +214,8 @@ class SimpleGRPOTrainer:
             
         # 转换为tensor
         rewards = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
+
+        print(f"rewards: {rewards}")
         
         # GRPO核心：计算group内的relative advantage (z-score标准化)
         if len(rewards) > 1:
@@ -324,8 +340,8 @@ class SimpleGRPOTrainer:
         # 详细调试信息
         if len(rewards) > 1:
             print(f"  GRPO Complete Stats:")
-            print(f"    Rewards: [{rewards.min():.3f}, {rewards.max():.3f}], Mean: {rewards.mean():.3f}, Std: {rewards.std():.3f}")
-            print(f"    Advantages: [{advantages.min():.3f}, {advantages.max():.3f}]")
+            print(f"    Rewards: {rewards}, [{rewards.min():.3f}, {rewards.max():.3f}], Mean: {rewards.mean():.3f}, Std: {rewards.std():.3f}")
+            print(f"    Advantages: {advantages}, [{advantages.min():.3f}, {advantages.max():.3f}]")
             print(f"    Policy Loss: {avg_policy_loss:.4f}, KL Loss: {avg_kl_loss:.4f}")
             print(f"    Total Loss: {total_loss:.4f}, Log Prob: {avg_log_prob:.3f}")
         
@@ -335,7 +351,7 @@ class SimpleGRPOTrainer:
         """执行一个训练步骤 - 批处理GPU优化版本"""
         # 批量生成和评估
         batch_results = self.generate_and_evaluate_batch(group_data)
-        # print(f"batch_results: {batch_results}")
+        print(f"batch_results: {batch_results}")
         
         # 计算统计信息
         total_reward = sum(result['reward'] for result in batch_results)
