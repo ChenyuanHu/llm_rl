@@ -13,7 +13,7 @@ class TrainingConfig:
     dataset_config: str = "main"  # GSM8K数据集的配置
     dataset_split: str = "train"
     max_length: int = 512  # 减少长度，适合简单的加减法
-    max_new_tokens: int = 128  # 减少生成长度，适合简单答案
+    max_new_tokens: int = 32  # 减少生成长度，适合简单答案
     max_samples: Optional[int] = 200  # 增加样本数量用于简单数学训练
     
     # 自定义数学数据集配置
