@@ -27,6 +27,8 @@ class TrainingConfig:
     beta: float = 0.1  # KL散度惩罚系数
     grpo_epochs: int = 1  # 每个batch的GRPO更新次数
     group_size: int = 4
+    clip_epsilon: float = 0.2  # PPO clipping参数
+    kl_coeff: float = 0.01  # KL散度正则化系数
     
     # 优化器配置
     weight_decay: float = 0.01

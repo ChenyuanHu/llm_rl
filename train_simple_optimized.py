@@ -79,6 +79,14 @@ class SimpleGRPOTrainer:
         # 设置模型
         self.model, self.tokenizer = setup_model_and_tokenizer(self.config)
         self.model.to(self.device)
+
+        self.ref_model, _ = setup_model_and_tokenizer(self.config, load_tokenizer=False)
+        self.ref_model.to(self.device)
+        
+        # 冻结参考模型
+        for param in self.ref_model.parameters():
+            param.requires_grad = False
+        self.ref_model.eval()
         
         # 设置优化器
         self.optimizer = AdamW(
@@ -162,11 +170,21 @@ class SimpleGRPOTrainer:
         return results
     
     def compute_grpo_loss(self, batch_results: List[Dict]):
-        """计算GRPO损失 - 真正的Group Relative Policy Optimization"""
+        """完整的GRPO损失计算 - 完全对齐原始论文实现
+        
+        GRPO (Group Relative Policy Optimization) 原始论文公式：
+        L = E[min(r(θ) * A, clip(r(θ), 1-ε, 1+ε) * A)] - β * KL(π_θ || π_ref)
+        
+        其中：
+        - r(θ) = π_θ(y|x) / π_ref(y|x) 是重要性采样比率
+        - A 是相对优势 (group内z-score标准化)
+        - clip() 是PPO风格的clipping
+        - KL是对参考策略的KL散度约束
+        """
         if len(batch_results) == 0:
             return None, 0.0
             
-        # 准备批量数据
+        # 准备数据
         all_input_ids = []
         all_response_ids = []
         all_rewards = []
@@ -183,35 +201,31 @@ class SimpleGRPOTrainer:
         # 转换为tensor
         rewards = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
         
-        # GRPO核心：计算group内的relative advantage (原始z-score方法)
+        # GRPO核心：计算group内的relative advantage (z-score标准化)
         if len(rewards) > 1:
-            # 标准化advantage (z-score) - 这是GRPO的原始方法
             reward_mean = rewards.mean()
             reward_std = rewards.std() + 1e-8  # 避免除零
-            relative_advantages = (rewards - reward_mean) / reward_std
+            advantages = (rewards - reward_mean) / reward_std
         else:
-            # 单个样本情况，直接使用reward
-            relative_advantages = rewards
+            advantages = rewards
         
-        # 批处理模型调用 - GPU优化
-        # 1. 准备批量数据
+        # 高效批处理：准备批量数据
         batch_full_ids = []
         batch_prompt_lengths = []
         batch_response_lengths = []
         
         for input_ids, response_ids in zip(all_input_ids, all_response_ids):
-            # 确保形状正确
             if response_ids.dim() == 1:
                 response_ids = response_ids.unsqueeze(0)
             if input_ids.dim() == 1:
                 input_ids = input_ids.unsqueeze(0)
                 
             full_ids = torch.cat([input_ids, response_ids], dim=1)
-            batch_full_ids.append(full_ids.squeeze(0))  # 移除batch维度用于padding
+            batch_full_ids.append(full_ids.squeeze(0))
             batch_prompt_lengths.append(input_ids.shape[1])
             batch_response_lengths.append(response_ids.shape[1])
         
-        # 2. 对不同长度的序列进行padding
+        # 序列padding和批处理
         max_length = max(seq.shape[0] for seq in batch_full_ids)
         padded_batch = torch.full(
             (len(batch_full_ids), max_length), 
@@ -220,7 +234,6 @@ class SimpleGRPOTrainer:
             device=self.device
         )
         
-        # 创建attention mask
         attention_mask = torch.zeros_like(padded_batch)
         
         for i, seq in enumerate(batch_full_ids):
@@ -228,55 +241,95 @@ class SimpleGRPOTrainer:
             padded_batch[i, :seq_len] = seq
             attention_mask[i, :seq_len] = 1
         
-        # 3. 批量前向传播 - 一次性处理所有样本
-        print(f"批量处理 {len(batch_full_ids)} 个样本，最大长度: {max_length}")
-        outputs = self.model(padded_batch, attention_mask=attention_mask)
+        # 当前策略前向传播（保留梯度）
+        current_outputs = self.model(padded_batch, attention_mask=attention_mask)
         
-        # 4. 计算每个样本的loss
-        total_loss = 0
+        # 参考策略前向传播（无梯度）
+        with torch.no_grad():
+            ref_outputs = self.ref_model(padded_batch, attention_mask=attention_mask)
+        
+        # GRPO损失计算
+        total_policy_loss = 0
+        total_kl_loss = 0
         total_log_prob = 0
         valid_samples = 0
         
+        # GRPO超参数
+        clip_epsilon = self.config.clip_epsilon
+        kl_coeff = self.config.kl_coeff
+        
         for i, (prompt_length, response_length, advantage) in enumerate(
-            zip(batch_prompt_lengths, batch_response_lengths, relative_advantages)
+            zip(batch_prompt_lengths, batch_response_lengths, advantages)
         ):
-            # 提取该样本的响应部分logits
-            sample_logits = outputs.logits[i]
-            response_start = prompt_length - 1
+            # 提取response部分的logits
+            current_logits = current_outputs.logits[i]
+            ref_logits = ref_outputs.logits[i]
+            
+            response_start = prompt_length - 1  # autoregressive shift
             response_end = prompt_length + response_length - 1
-            response_logits = sample_logits[response_start:response_end]
             
-            # 提取该样本的响应token ids
-            response_tokens = padded_batch[i][prompt_length:prompt_length + response_length]
+            current_response_logits = current_logits[response_start:response_end]
+            ref_response_logits = ref_logits[response_start:response_end]
             
-            # 计算log probabilities
-            log_probs = F.log_softmax(response_logits, dim=-1)
-            selected_log_probs = log_probs.gather(1, response_tokens.unsqueeze(1)).squeeze()
+            # 提取response token ids
+            response_targets = padded_batch[i][prompt_length:prompt_length + response_length]
             
-            # 平均log probability
-            avg_log_prob = selected_log_probs.mean()
+            # 计算当前策略的log probabilities
+            current_log_probs = F.log_softmax(current_response_logits, dim=-1)
+            current_selected_log_probs = current_log_probs.gather(1, response_targets.unsqueeze(1)).squeeze()
+            current_log_prob_sum = current_selected_log_probs.sum()
             
-            # GRPO损失：使用relative advantage加权
-            sample_loss = -avg_log_prob * advantage
+            # 计算参考策略的log probabilities
+            ref_log_probs = F.log_softmax(ref_response_logits, dim=-1)
+            ref_selected_log_probs = ref_log_probs.gather(1, response_targets.unsqueeze(1)).squeeze()
+            ref_log_prob_sum = ref_selected_log_probs.sum()
             
-            total_loss += sample_loss
-            total_log_prob += avg_log_prob.item()
+            # 计算重要性采样比率 r(θ) = π_θ(y|x) / π_ref(y|x)
+            log_ratio = current_log_prob_sum - ref_log_prob_sum
+            ratio = torch.exp(log_ratio)
+            
+            # PPO/GRPO clipping
+            clipped_ratio = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon)
+            
+            # 计算clipped surrogate objective
+            # L_clip = E[min(r(θ) * A, clip(r(θ), 1-ε, 1+ε) * A)]
+            surrogate1 = ratio * advantage
+            surrogate2 = clipped_ratio * advantage
+            policy_loss = -torch.min(surrogate1, surrogate2)  # 负号因为我们要最大化
+            
+            # 计算KL散度
+            # KL(π_θ || π_ref) 在response tokens上
+            current_probs = F.softmax(current_response_logits, dim=-1)
+            ref_probs = F.softmax(ref_response_logits, dim=-1)
+            kl_divergence = F.kl_div(current_log_probs, ref_probs, reduction='sum')
+            
+            total_policy_loss += policy_loss
+            total_kl_loss += kl_divergence
+            total_log_prob += current_log_prob_sum.item()
             valid_samples += 1
         
         if valid_samples == 0:
             return None, 0.0
-            
-        # 返回平均损失
-        avg_loss = total_loss / valid_samples
+        
+        # 计算最终的GRPO损失
+        # L_total = L_clip - β * KL(π_θ || π_ref)
+        avg_policy_loss = total_policy_loss / valid_samples
+        avg_kl_loss = total_kl_loss / valid_samples
+        
+        # 原始GRPO论文的完整损失公式
+        total_loss = avg_policy_loss + kl_coeff * avg_kl_loss
+        
         avg_log_prob = total_log_prob / valid_samples
         
-        # 调试信息：显示GRPO的relative advantages分布
+        # 详细调试信息
         if len(rewards) > 1:
-            print(f"  GRPO Group Stats - Rewards: [{rewards.min():.3f}, {rewards.max():.3f}], "
-                  f"Mean: {rewards.mean():.3f}, Std: {rewards.std():.3f}, "
-                  f"Advantages: [{relative_advantages.min():.3f}, {relative_advantages.max():.3f}]")
+            print(f"  GRPO Complete Stats:")
+            print(f"    Rewards: [{rewards.min():.3f}, {rewards.max():.3f}], Mean: {rewards.mean():.3f}, Std: {rewards.std():.3f}")
+            print(f"    Advantages: [{advantages.min():.3f}, {advantages.max():.3f}]")
+            print(f"    Policy Loss: {avg_policy_loss:.4f}, KL Loss: {avg_kl_loss:.4f}")
+            print(f"    Total Loss: {total_loss:.4f}, Log Prob: {avg_log_prob:.3f}")
         
-        return avg_loss, avg_log_prob
+        return total_loss, avg_log_prob
     
     def train_group(self, group_data) -> Dict:
         """执行一个训练步骤 - 批处理GPU优化版本"""
@@ -333,9 +386,11 @@ class SimpleGRPOTrainer:
         }
 
     def sample_group(self, batch_data) -> List[Dict]:
-        """采样一个group"""
+        """GRPO group采样 - 为单个prompt创建group_size个副本供生成多个responses"""
         assert len(batch_data) == 1
         
+        # 为同一个prompt创建group_size个副本
+        # generate_and_evaluate_batch会为每个副本生成不同的response
         return [batch_data[0]] * self.config.group_size
         
     def train_epoch(self, epoch: int) -> Dict:

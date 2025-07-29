@@ -84,20 +84,23 @@ def save_metrics(metrics: Dict[str, List[float]], output_dir: str):
     
     print(f"训练指标已保存到: {metrics_path}")
 
-def setup_model_and_tokenizer(config: TrainingConfig):
+def setup_model_and_tokenizer(config: TrainingConfig, load_tokenizer: bool = True):
     """设置模型和tokenizer"""
     print(f"正在加载模型: {config.model_name}")
     
-    # 加载tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.model_name,
-        trust_remote_code=config.trust_remote_code,
-        padding_side="left"
-    )
-    
-    # 设置pad token
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if load_tokenizer:
+        # 加载tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            config.model_name,
+            trust_remote_code=config.trust_remote_code,
+            padding_side="left"
+        )
+        
+        # 设置pad token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+    else:
+        tokenizer = None
     
     # 加载模型
     model = AutoModelForCausalLM.from_pretrained(
