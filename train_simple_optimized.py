@@ -183,22 +183,12 @@ class SimpleGRPOTrainer:
         # 转换为tensor
         rewards = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
         
-        # GRPO核心：计算group内的relative advantage
+        # GRPO核心：计算group内的relative advantage (原始z-score方法)
         if len(rewards) > 1:
-            # 方法1: 标准化advantage (z-score)
+            # 标准化advantage (z-score) - 这是GRPO的原始方法
             reward_mean = rewards.mean()
             reward_std = rewards.std() + 1e-8  # 避免除零
-            z_score_advantages = (rewards - reward_mean) / reward_std
-            
-            # 方法2: 排名基础的advantage (更稳定)
-            _, reward_indices = torch.sort(rewards, descending=True)
-            rank_advantages = torch.zeros_like(rewards)
-            for i, idx in enumerate(reward_indices):
-                # 将排名转换为[-1, 1]范围的advantage
-                rank_advantages[idx] = 2.0 * (len(rewards) - 1 - i) / (len(rewards) - 1) - 1.0
-            
-            # 结合两种方法：使用排名为主，z-score为辅
-            relative_advantages = 0.7 * rank_advantages + 0.3 * z_score_advantages
+            relative_advantages = (rewards - reward_mean) / reward_std
         else:
             # 单个样本情况，直接使用reward
             relative_advantages = rewards
@@ -283,6 +273,7 @@ class SimpleGRPOTrainer:
         # 调试信息：显示GRPO的relative advantages分布
         if len(rewards) > 1:
             print(f"  GRPO Group Stats - Rewards: [{rewards.min():.3f}, {rewards.max():.3f}], "
+                  f"Mean: {rewards.mean():.3f}, Std: {rewards.std():.3f}, "
                   f"Advantages: [{relative_advantages.min():.3f}, {relative_advantages.max():.3f}]")
         
         return avg_loss, avg_log_prob
