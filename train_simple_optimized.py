@@ -312,8 +312,8 @@ class SimpleGRPOTrainer:
             policy_loss = -torch.min(surrogate1, surrogate2)  # 负号因为我们要最大化
             
             # 计算KL散度
-            # KL(π_θ || π_ref) 在response tokens上
-            current_probs = F.softmax(current_response_logits, dim=-1)
+            # KL(π_θ || π_ref) 在response tokens上  
+            # PyTorch KL散度: F.kl_div(log_probs, target_probs)
             ref_probs = F.softmax(ref_response_logits, dim=-1)
             kl_divergence = F.kl_div(current_log_probs, ref_probs, reduction='sum')
             
