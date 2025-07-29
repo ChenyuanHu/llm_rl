@@ -215,8 +215,6 @@ class SimpleGRPOTrainer:
         # 转换为tensor
         rewards = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
 
-        print(f"rewards: {rewards}")
-        
         # GRPO核心：计算group内的relative advantage (z-score标准化)
         if len(rewards) > 1:
             reward_mean = rewards.mean()
