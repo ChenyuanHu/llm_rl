@@ -5,7 +5,7 @@ from typing import Optional
 @dataclass
 class TrainingConfig:
     # 模型配置
-    model_name: str = "Qwen/Qwen2.5-0.5B"
+    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
     trust_remote_code: bool = True
     
     # 数据集配置
