@@ -25,7 +25,7 @@ class TrainingConfig:
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
-    logging_steps: int = 1
+    logging_steps: int = 10
     
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数

@@ -449,7 +449,6 @@ class SimpleGRPOTrainer:
         return {f"avg_{k[:-1]}": np.mean(v) for k, v in epoch_metrics.items()}
         
     def train(self):
-        """主训练循环 - 简化版本"""
         print("="*60)
         print("开始GRPO训练")
         print("="*60)
@@ -490,7 +489,6 @@ class SimpleGRPOTrainer:
         print(f"最终模型保存至: {final_model_dir}")
 
 def main():
-    """主函数 - 简化版本"""
     print("🚀 初始化GRPO训练...")
     
     try:
