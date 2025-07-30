@@ -5,7 +5,7 @@ from typing import Optional
 @dataclass
 class TrainingConfig:
     # 模型配置
-    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
     trust_remote_code: bool = True
     
     # 数据集配置
@@ -14,10 +14,10 @@ class TrainingConfig:
     dataset_split: str = "train"
     max_length: int = 512  # 减少长度，适合简单的加减法
     max_new_tokens: int = 32  # 减少生成长度，适合简单答案
-    max_samples: Optional[int] = 200  # 增加样本数量用于简单数学训练
+    max_samples: Optional[int] = 2000  # 增加样本数量用于简单数学训练
     
     # 自定义数学数据集配置
-    custom_math_size: int = 500  # 自定义数据集大小
+    custom_math_size: int = 10000  # 自定义数据集大小
     max_number: int = 10  # 数字范围：0-10
     
     # GRPO训练配置
@@ -31,7 +31,7 @@ class TrainingConfig:
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数
     grpo_epochs: int = 1  # 每个batch的GRPO更新次数
-    group_size: int = 8
+    group_size: int = 6
     clip_epsilon: float = 0.2  # PPO clipping参数
     kl_coeff: float = 0.01  # KL散度正则化系数
     

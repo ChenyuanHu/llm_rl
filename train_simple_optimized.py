@@ -35,8 +35,8 @@ class TrainingUtils:
         """统一的训练日志输出"""
         print(f"Epoch {epoch}/{total_epochs}, "
               f"Batch {batch_idx}/{total_batches}, "
-              f"Tokens: {stats['avg_tokens']:.1f}, "
               f"Reward: {stats['avg_reward']:.3f}, "
+              f"Tokens: {stats['avg_tokens']:.1f}, "
               f"Loss: {stats['avg_loss']:.4f}, "
               f"LogProb: {stats.get('avg_log_prob', 0):.3f}, "
               f"Time: {cost_time:.2f}s")
@@ -337,7 +337,7 @@ class SimpleGRPOTrainer:
         avg_log_prob = total_log_prob / valid_samples
         
         # 详细调试信息
-        if len(rewards) > 1:
+        if False and len(rewards) > 1:
             print(f"  GRPO Complete Stats:")
             print(f"    Rewards: {rewards}, [{rewards.min():.3f}, {rewards.max():.3f}], Mean: {rewards.mean():.3f}, Std: {rewards.std():.3f}")
             print(f"    Advantages: {advantages}, [{advantages.min():.3f}, {advantages.max():.3f}]")
@@ -349,37 +349,22 @@ class SimpleGRPOTrainer:
     def train_group(self, group_data) -> Dict:
         """执行一个训练步骤 - 批处理GPU优化版本"""
         # 批量生成和评估
+        start_time_0 = time.time()
         batch_results = self.generate_and_evaluate_batch(group_data)
-        print(f"batch_results: {batch_results}")
+        cost_time_0 = time.time() - start_time_0
+        # print(f"batch_results: {batch_results}")
         
         # 计算统计信息
         total_reward = sum(result['reward'] for result in batch_results)
         total_tokens = sum(result['token_count'] for result in batch_results)
         batch_size = len(batch_results)
         
-        # 打印详细信息（抽样显示）
-        negative_count = sum(1 for r in batch_results if r['reward'] < 0)
-        sample_displayed = 0
-        max_display = 0  # 最多显示3个样本的详细信息
-        
-        for i, result in enumerate(batch_results):
-            should_display = sample_displayed < max_display
-            if should_display:
-                print(f"Sample {i+1}/{batch_size}:")
-                print(f"  predicted_answer: {result['predicted_answer']}")
-                print(f"  ground_truth: {result['ground_truth']}")
-                print(f"  reward: {result['reward']}")
-                print(f"  token_count: {result['token_count']}")
-                if result['reward'] < 0:
-                    print(f"  prompt: {result['prompt'][:100]}...")
-                    print(f"  response: {result['response'][:100]}...")
-                sample_displayed += 1
-        
-        print(f"负奖励样本数: {negative_count}/{batch_size}")
-        
         # 使用GRPO计算损失
+        start_time_1 = time.time()
         loss, avg_log_prob = self.compute_grpo_loss(batch_results)
+        cost_time_1 = time.time() - start_time_1
         
+        start_time_2 = time.time()
         if loss is not None:
             # 反向传播
             self.optimizer.zero_grad()
@@ -390,6 +375,8 @@ class SimpleGRPOTrainer:
             loss_value = loss.item()
         else:
             loss_value = 0.0
+        cost_time_2 = time.time() - start_time_2
+        print(f"生成评估, GRPO计算损失, 反向传播时间: {cost_time_0:.2f}s, {cost_time_1:.2f}s, {cost_time_2:.2f}s")
         
         # 返回平均统计
         return {
