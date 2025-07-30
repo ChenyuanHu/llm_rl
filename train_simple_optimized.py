@@ -318,9 +318,11 @@ class SimpleGRPOTrainer:
             
             # 计算KL散度
             # KL(π_θ || π_ref) 在response tokens上  
-            # PyTorch KL散度: F.kl_div(log_probs, target_probs)
-            ref_probs = F.softmax(ref_response_logits, dim=-1)
-            kl_divergence = F.kl_div(current_log_probs, ref_probs, reduction='sum')
+            # PyTorch KL散度: F.kl_div(input=log_probs, target=probs) 计算 KL(target || input)
+            # 所以要计算 KL(π_θ || π_ref)，需要 F.kl_div(ref_log_probs, current_probs)
+            current_probs = F.softmax(current_response_logits, dim=-1)  # π_θ
+            # ref_log_probs = F.log_softmax(ref_response_logits, dim=-1)  # log π_ref
+            kl_divergence = F.kl_div(ref_log_probs, current_probs, reduction='sum')
             
             # 数值稳定性：限制KL散度避免过大
             kl_divergence = torch.clamp(kl_divergence, 0.0, 50.0)
