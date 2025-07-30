@@ -14,15 +14,14 @@ class TrainingConfig:
     dataset_split: str = "train"
     max_length: int = 512  # 减少长度，适合简单的加减法
     max_new_tokens: int = 32  # 减少生成长度，适合简单答案
-    max_samples: Optional[int] = 2000  # 增加样本数量用于简单数学训练
+    max_samples: Optional[int] = 2000  # 先用少量样本测试训练稳定性
     
     # 自定义数学数据集配置
     custom_math_size: int = 10000  # 自定义数据集大小
     max_number: int = 10  # 数字范围：0-10
     
     # GRPO训练配置
-    # learning_rate: float = 5e-6
-    learning_rate: float = 5e-6  # 稍微提高学习率，适合简单任务
+    learning_rate: float = 1e-6  # 降低学习率提高稳定性
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
@@ -31,9 +30,9 @@ class TrainingConfig:
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数
     grpo_epochs: int = 1  # 每个batch的GRPO更新次数
-    group_size: int = 6
-    clip_epsilon: float = 0.2  # PPO clipping参数
-    kl_coeff: float = 0.01  # KL散度正则化系数
+    group_size: int = 8
+    clip_epsilon: float = 0.1  # 减小clipping范围提高稳定性
+    kl_coeff: float = 0.005  # 减小KL系数
     
     # 优化器配置
     weight_decay: float = 0.01

@@ -301,6 +301,10 @@ class SimpleGRPOTrainer:
             
             # 计算重要性采样比率 r(θ) = π_θ(y|x) / π_ref(y|x)
             log_ratio = current_log_prob_sum - ref_log_prob_sum
+            
+            # 数值稳定性：限制log_ratio避免exp爆炸
+            log_ratio = torch.clamp(log_ratio, -10.0, 10.0)  # 限制在合理范围内
+            
             ratio = torch.exp(log_ratio)
             
             # PPO/GRPO clipping
@@ -317,6 +321,9 @@ class SimpleGRPOTrainer:
             # PyTorch KL散度: F.kl_div(log_probs, target_probs)
             ref_probs = F.softmax(ref_response_logits, dim=-1)
             kl_divergence = F.kl_div(current_log_probs, ref_probs, reduction='sum')
+            
+            # 数值稳定性：限制KL散度避免过大
+            kl_divergence = torch.clamp(kl_divergence, 0.0, 50.0)
             
             total_policy_loss += policy_loss
             total_kl_loss += kl_divergence
@@ -376,7 +383,7 @@ class SimpleGRPOTrainer:
         else:
             loss_value = 0.0
         cost_time_2 = time.time() - start_time_2
-        print(f"生成评估, GRPO计算损失, 反向传播时间: {cost_time_0:.2f}s, {cost_time_1:.2f}s, {cost_time_2:.2f}s")
+        # print(f"生成评估, GRPO计算损失, 反向传播时间: {cost_time_0:.2f}s, {cost_time_1:.2f}s, {cost_time_2:.2f}s")
         
         # 返回平均统计
         return {
