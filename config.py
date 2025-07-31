@@ -14,7 +14,7 @@ class TrainingConfig:
     dataset_split: str = "train"
     max_length: int = 512  # 减少长度，适合简单的加减法
     max_new_tokens: int = 32  # 减少生成长度，适合简单答案，gsm8k数据集要用512
-    max_samples: Optional[int] = 250
+    max_samples: Optional[int] = 125
     
     # 评估配置
     eval_split_ratio: float = 0.2  # 评估集占总数据集的比例
@@ -29,12 +29,12 @@ class TrainingConfig:
     max_number: int = 10  # 数字范围：0-10
     
     # GRPO训练配置
-    grpo_loss_type: str = "deepseek" #"without_kl_clip"  # 选择GRPO损失类型
+    grpo_loss_type: str = "without_kl_clip" #"deepseek"  # 选择GRPO损失类型
     learning_rate: float = 1e-6  # 降低学习率提高稳定性
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
-    logging_steps: int = 10
+    logging_steps: int = 1
     
     # GRPO特定参数
     beta: float = 0.1  # KL散度惩罚系数
