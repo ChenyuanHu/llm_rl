@@ -29,6 +29,7 @@ class TrainingConfig:
     max_number: int = 10  # 数字范围：0-10
     
     # GRPO训练配置
+    grpo_loss_type: str = "deepseek" #"without_kl_clip"  # 选择GRPO损失类型
     learning_rate: float = 1e-6  # 降低学习率提高稳定性
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 1

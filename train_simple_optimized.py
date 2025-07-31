@@ -70,13 +70,14 @@ class SimpleGRPOTrainer:
         self.model, self.tokenizer = setup_model_and_tokenizer(self.config)
         self.model.to(self.device)
 
-        self.ref_model, _ = setup_model_and_tokenizer(self.config, load_tokenizer=False)
-        self.ref_model.to(self.device)
+        if self.config.grpo_loss_type == "deepseek":
+            self.ref_model, _ = setup_model_and_tokenizer(self.config, load_tokenizer=False)
+            self.ref_model.to(self.device)
         
-        # 冻结参考模型
-        for param in self.ref_model.parameters():
-            param.requires_grad = False
-        self.ref_model.eval()
+            # 冻结参考模型
+            for param in self.ref_model.parameters():
+                param.requires_grad = False
+            self.ref_model.eval()
         
         # 设置优化器
         self.optimizer = AdamW(
@@ -190,22 +191,8 @@ class SimpleGRPOTrainer:
             })
             
         return results
-    
-    def compute_grpo_loss(self, batch_results: List[Dict]):
-        """完整的GRPO损失计算 - 完全对齐原始论文实现
-        
-        GRPO (Group Relative Policy Optimization) 原始论文公式：
-        L = E[min(r(θ) * A, clip(r(θ), 1-ε, 1+ε) * A)] - β * KL(π_θ || π_ref)
-        
-        其中：
-        - r(θ) = π_θ(y|x) / π_ref(y|x) 是重要性采样比率
-        - A 是相对优势 (group内z-score标准化)
-        - clip() 是PPO风格的clipping
-        - KL是对参考策略的KL散度约束
-        """
-        if len(batch_results) == 0:
-            return None, 0.0
-            
+
+    def compute_grpo_loss_prepare(self, batch_results: List[Dict]):
         # 准备数据
         all_input_ids = []
         all_response_ids = []
@@ -262,6 +249,25 @@ class SimpleGRPOTrainer:
             seq_len = seq.shape[0]
             padded_batch[i, :seq_len] = seq
             attention_mask[i, :seq_len] = 1
+
+        return padded_batch, attention_mask, batch_prompt_lengths, batch_response_lengths, advantages
+        
+    def compute_grpo_loss_deepseek(self, batch_results: List[Dict]):
+        """完整的GRPO损失计算 - 完全对齐原始论文实现
+        
+        GRPO (Group Relative Policy Optimization) 原始论文公式：
+        L = E[min(r(θ) * A, clip(r(θ), 1-ε, 1+ε) * A)] - β * KL(π_θ || π_ref)
+        
+        其中：
+        - r(θ) = π_θ(y|x) / π_ref(y|x) 是重要性采样比率
+        - A 是相对优势 (group内z-score标准化)
+        - clip() 是PPO风格的clipping
+        - KL是对参考策略的KL散度约束
+        """
+        if len(batch_results) == 0:
+            return None, 0.0
+            
+        padded_batch, attention_mask, batch_prompt_lengths, batch_response_lengths, advantages = self.compute_grpo_loss_prepare(batch_results)
         
         # 当前策略前向传播（保留梯度）
         current_outputs = self.model(padded_batch, attention_mask=attention_mask)
@@ -361,6 +367,68 @@ class SimpleGRPOTrainer:
             print(f"    Total Loss: {total_loss:.4f}, Log Prob: {avg_log_prob:.3f}")
         
         return total_loss, avg_log_prob
+
+    def compute_grpo_loss_without_kl_clip(self, batch_results: List[Dict]):
+        """计算GRPO损失 - 不使用KL散度剪裁"""
+        if len(batch_results) == 0:
+            return None, 0.0
+            
+        padded_batch, attention_mask, batch_prompt_lengths, batch_response_lengths, advantages = self.compute_grpo_loss_prepare(batch_results)
+        
+        # 当前策略前向传播（保留梯度）
+        current_outputs = self.model(padded_batch, attention_mask=attention_mask)
+        
+        # GRPO损失计算
+        total_policy_loss = 0
+        total_log_prob = 0
+        valid_samples = 0
+        
+        for i, (prompt_length, response_length, advantage) in enumerate(
+            zip(batch_prompt_lengths, batch_response_lengths, advantages)
+        ):
+            # 提取response部分的logits
+            current_logits = current_outputs.logits[i]
+            
+            response_start = prompt_length - 1  # autoregressive shift
+            response_end = prompt_length + response_length - 1
+            
+            current_response_logits = current_logits[response_start:response_end]
+            
+            # 提取response token ids
+            response_targets = padded_batch[i][prompt_length:prompt_length + response_length]
+            
+            # 计算当前策略的log probabilities
+            current_log_probs = F.log_softmax(current_response_logits, dim=-1)
+            current_selected_log_probs = current_log_probs.gather(1, response_targets.unsqueeze(1)).squeeze()
+            current_log_prob_sum = current_selected_log_probs.sum()
+            
+            policy_loss = -current_log_prob_sum * advantage
+            
+            total_policy_loss += policy_loss
+            total_log_prob += current_log_prob_sum.item()
+            valid_samples += 1
+        
+        if valid_samples == 0:
+            return None, 0.0
+        
+        # 计算最终的GRPO损失
+        # L_total = L_clip - β * KL(π_θ || π_ref)
+        avg_policy_loss = total_policy_loss / valid_samples
+        
+        # 原始GRPO论文的完整损失公式
+        total_loss = avg_policy_loss
+        
+        avg_log_prob = total_log_prob / valid_samples
+        
+        return total_loss, avg_log_prob
+
+    def compute_grpo_loss(self, batch_results: List[Dict]):
+        if self.config.grpo_loss_type == "deepseek":
+            return self.compute_grpo_loss_deepseek(batch_results)
+        elif self.config.grpo_loss_type == "without_kl_clip":
+            return self.compute_grpo_loss_without_kl_clip(batch_results)
+        else:
+            raise ValueError(f"Unsupported GRPO loss type: {self.config.grpo_loss_type}")
     
     def train_group(self, group_data) -> Dict:
         """执行一个训练步骤 - 批处理GPU优化版本"""
