@@ -19,6 +19,7 @@ class TrainingConfig:
     # 评估配置
     eval_split_ratio: float = 0.2  # 评估集占总数据集的比例
     eval_batch_size: int = 8  # 评估时的批大小
+    eval_steps: int = 1
 
     # 数据生成配置
     rollout_temperature: float = 1.0

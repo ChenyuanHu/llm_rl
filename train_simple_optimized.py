@@ -536,7 +536,8 @@ class SimpleGRPOTrainer:
             step_stats = self.train_group(group)
 
             # 执行评估步骤
-            eval_stats = self.eval_step()
+            if (batch_idx + 1) % self.config.eval_steps == 0:
+                eval_stats = self.eval_step()
             cost_time = time.time() - start_time
             
             # 记录指标
