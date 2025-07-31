@@ -220,8 +220,8 @@ class SimpleGRPOTrainer:
         
         # 高效批处理：准备批量数据
         batch_full_ids = []
-        batch_prompt_lengths = []
-        batch_response_lengths = []
+        batch_response_starts = []
+        batch_response_ends = []
         
         for input_ids, response_ids in zip(all_input_ids, all_response_ids):
             if response_ids.dim() == 1:
@@ -231,8 +231,12 @@ class SimpleGRPOTrainer:
                 
             full_ids = torch.cat([input_ids, response_ids], dim=1)
             batch_full_ids.append(full_ids.squeeze(0))
-            batch_prompt_lengths.append(input_ids.shape[1])
-            batch_response_lengths.append(response_ids.shape[1])
+
+            response_start = input_ids.shape[1]
+            response_end = input_ids.shape[1] + response_ids.shape[1]
+
+            batch_response_starts.append(response_start)
+            batch_response_ends.append(response_end)
         
         # 序列padding和批处理
         max_length = max(seq.shape[0] for seq in batch_full_ids)
@@ -250,7 +254,7 @@ class SimpleGRPOTrainer:
             padded_batch[i, :seq_len] = seq
             attention_mask[i, :seq_len] = 1
 
-        return padded_batch, attention_mask, batch_prompt_lengths, batch_response_lengths, advantages
+        return padded_batch, attention_mask, batch_response_starts, batch_response_ends, advantages
         
     def compute_grpo_loss_deepseek(self, batch_results: List[Dict]):
         """完整的GRPO损失计算 - 完全对齐原始论文实现
@@ -267,7 +271,7 @@ class SimpleGRPOTrainer:
         if len(batch_results) == 0:
             return None, 0.0
             
-        padded_batch, attention_mask, batch_prompt_lengths, batch_response_lengths, advantages = self.compute_grpo_loss_prepare(batch_results)
+        padded_batch, attention_mask, batch_response_starts, batch_response_ends, advantages = self.compute_grpo_loss_prepare(batch_results)
         
         # 当前策略前向传播（保留梯度）
         current_outputs = self.model(padded_batch, attention_mask=attention_mask)
@@ -286,21 +290,18 @@ class SimpleGRPOTrainer:
         clip_epsilon = self.config.clip_epsilon
         kl_coeff = self.config.kl_coeff
         
-        for i, (prompt_length, response_length, advantage) in enumerate(
-            zip(batch_prompt_lengths, batch_response_lengths, advantages)
+        for i, (response_start, response_end, advantage) in enumerate(
+            zip(batch_response_starts, batch_response_ends, advantages)
         ):
             # 提取response部分的logits
             current_logits = current_outputs.logits[i]
             ref_logits = ref_outputs.logits[i]
             
-            response_start = prompt_length - 1  # autoregressive shift
-            response_end = prompt_length + response_length - 1
-            
-            current_response_logits = current_logits[response_start:response_end]
-            ref_response_logits = ref_logits[response_start:response_end]
+            current_response_logits = current_logits[response_start-1:response_end-1]
+            ref_response_logits = ref_logits[response_start-1:response_end-1]
             
             # 提取response token ids
-            response_targets = padded_batch[i][prompt_length:prompt_length + response_length]
+            response_targets = padded_batch[i][response_start:response_end]
             
             # 计算当前策略的log probabilities
             current_log_probs = F.log_softmax(current_response_logits, dim=-1)
@@ -373,7 +374,7 @@ class SimpleGRPOTrainer:
         if len(batch_results) == 0:
             return None, 0.0
             
-        padded_batch, attention_mask, batch_prompt_lengths, batch_response_lengths, advantages = self.compute_grpo_loss_prepare(batch_results)
+        padded_batch, attention_mask, batch_response_starts, batch_response_ends, advantages = self.compute_grpo_loss_prepare(batch_results)
         
         # 当前策略前向传播（保留梯度）
         current_outputs = self.model(padded_batch, attention_mask=attention_mask)
@@ -383,19 +384,16 @@ class SimpleGRPOTrainer:
         total_log_prob = 0
         valid_samples = 0
         
-        for i, (prompt_length, response_length, advantage) in enumerate(
-            zip(batch_prompt_lengths, batch_response_lengths, advantages)
+        for i, (response_start, response_end, advantage) in enumerate(
+            zip(batch_response_starts, batch_response_ends, advantages)
         ):
             # 提取response部分的logits
             current_logits = current_outputs.logits[i]
             
-            response_start = prompt_length - 1  # autoregressive shift
-            response_end = prompt_length + response_length - 1
-            
-            current_response_logits = current_logits[response_start:response_end]
+            current_response_logits = current_logits[response_start-1:response_end-1]
             
             # 提取response token ids
-            response_targets = padded_batch[i][prompt_length:prompt_length + response_length]
+            response_targets = padded_batch[i][response_start:response_end]
             
             # 计算当前策略的log probabilities
             current_log_probs = F.log_softmax(current_response_logits, dim=-1)
