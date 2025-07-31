@@ -529,6 +529,11 @@ class SimpleGRPOTrainer:
         # 训练指标
         epoch_metrics = {'token_counts': [], 'rewards': [], 'losses': []}
         
+        eval_stats = {
+            "eval_reward": 0.0,
+            "eval_tokens": 0.0
+        }
+        last_eval_stats = eval_stats
         for batch_idx, batch in enumerate(dataloader):
             # 执行训练步骤
             start_time = time.time()
@@ -538,6 +543,9 @@ class SimpleGRPOTrainer:
             # 执行评估步骤
             if (batch_idx + 1) % self.config.eval_steps == 0:
                 eval_stats = self.eval_step()
+                last_eval_stats = eval_stats
+            else:
+                eval_stats = last_eval_stats
             cost_time = time.time() - start_time
             
             # 记录指标
