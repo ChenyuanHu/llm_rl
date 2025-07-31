@@ -30,18 +30,6 @@ class TrainingUtils:
         ), batch_size
 
     @staticmethod
-    def log_training_step(epoch, total_epochs, batch_idx, total_batches, 
-                         stats, cost_time):
-        """统一的训练日志输出"""
-        print(f"Epoch {epoch}/{total_epochs}, "
-              f"Batch {batch_idx}/{total_batches}, "
-              f"Reward: {stats['avg_reward']:.3f}, "
-              f"Tokens: {stats['avg_tokens']:.1f}, "
-              f"Loss: {stats['avg_loss']:.4f}, "
-              f"LogProb: {stats.get('avg_log_prob', 0):.3f}, "
-              f"Time: {cost_time:.2f}s")
-
-    @staticmethod
     def save_checkpoint(model, tokenizer, epoch, output_dir):
         """保存检查点"""
         checkpoint_dir = os.path.join(output_dir, f"checkpoint-epoch-{epoch}")
@@ -60,6 +48,8 @@ class SimpleGRPOTrainer:
         self.model = None
         self.tokenizer = None
         self.optimizer = None
+        self.dataset = None
+        self.eval_dataset = None
         
         # 初始化
         set_seed(config.seed)
@@ -96,13 +86,30 @@ class SimpleGRPOTrainer:
         )
         
         # 设置数据集
-        self.dataset = load_math_dataset(self.config)
+        full_dataset = load_math_dataset(self.config)
+        
+        # 分割数据集为训练集和评估集
+        total_size = len(full_dataset)
+        eval_size = int(total_size * self.config.eval_split_ratio)
+        train_size = total_size - eval_size
+        
+        # 随机分割数据集
+        indices = list(range(total_size))
+        np.random.seed(self.config.seed)
+        np.random.shuffle(indices)
+        
+        train_indices = indices[:train_size]
+        eval_indices = indices[train_size:]
+        
+        self.dataset = full_dataset.select(train_indices)
+        self.eval_dataset = full_dataset.select(eval_indices)
         
         # 创建输出目录
         os.makedirs(self.config.output_dir, exist_ok=True)
         os.makedirs(self.config.logging_dir, exist_ok=True)
         
-        print(f"设置完成 - 模型已加载，数据集: {len(self.dataset)}条样本")
+        print(f"设置完成 - 模型已加载")
+        print(f"训练集: {len(self.dataset)}条样本, 评估集: {len(self.eval_dataset)}条样本")
         
     def generate_and_evaluate_batch(self, batch_data: List[Dict], is_rollout: bool = True) -> List[Dict]:
         """批量生成响应并评估 - 优化版本"""
@@ -402,6 +409,44 @@ class SimpleGRPOTrainer:
         # 为同一个prompt创建group_size个副本
         # generate_and_evaluate_batch会为每个副本生成不同的response
         return [batch_data[0]] * self.config.group_size
+    
+    def eval_step(self) -> Dict:
+        """执行评估步骤"""
+        if self.eval_dataset is None or len(self.eval_dataset) == 0:
+            return {"eval_reward": 0.0, "eval_tokens": 0.0}
+        
+        self.model.eval()
+        
+        # 随机选择评估样本
+        eval_indices = np.random.choice(
+            len(self.eval_dataset), 
+            size=min(self.config.eval_batch_size, len(self.eval_dataset)), 
+            replace=False
+        )
+        # 转换numpy.int64为Python int，避免HuggingFace Dataset的类型错误
+        eval_batch = [self.eval_dataset[int(i)] for i in eval_indices]
+        
+        # 使用eval温度进行评估
+        with torch.no_grad():
+            eval_results = self.generate_and_evaluate_batch(eval_batch, is_rollout=False)
+        
+        # 计算评估指标
+        total_reward = sum(result['reward'] for result in eval_results)
+        total_tokens = sum(result['token_count'] for result in eval_results)
+        batch_size = len(eval_results)
+        
+        avg_eval_reward = total_reward / batch_size
+        avg_eval_tokens = total_tokens / batch_size
+        
+        # 记录评估指标
+        self.metrics_tracker.add_eval_metrics(avg_eval_reward, avg_eval_tokens)
+        
+        self.model.train()  # 切换回训练模式
+        
+        return {
+            "eval_reward": avg_eval_reward,
+            "eval_tokens": avg_eval_tokens
+        }
         
     def train_epoch(self, epoch: int) -> Dict:
         """训练一个epoch - 简化版本"""
@@ -421,6 +466,9 @@ class SimpleGRPOTrainer:
             start_time = time.time()
             group = self.sample_group(batch)
             step_stats = self.train_group(group)
+
+            # 执行评估步骤
+            eval_stats = self.eval_step()
             cost_time = time.time() - start_time
             
             # 记录指标
@@ -433,6 +481,14 @@ class SimpleGRPOTrainer:
             epoch_metrics['token_counts'].append(step_stats['avg_tokens'])
             epoch_metrics['rewards'].append(step_stats['avg_reward'])
             epoch_metrics['losses'].append(step_stats['avg_loss'])
+            
+            # 记录评估指标
+            if 'eval_rewards' not in epoch_metrics:
+                epoch_metrics['eval_rewards'] = []
+                epoch_metrics['eval_token_counts'] = []
+            epoch_metrics['eval_rewards'].append(eval_stats['eval_reward'])
+            epoch_metrics['eval_token_counts'].append(eval_stats['eval_tokens'])
+            
             if 'avg_log_prob' in step_stats:
                 if 'log_probs' not in epoch_metrics:
                     epoch_metrics['log_probs'] = []
@@ -440,11 +496,14 @@ class SimpleGRPOTrainer:
             
             # 日志输出
             if (batch_idx + 1) % self.config.logging_steps == 0:
-                TrainingUtils.log_training_step(
-                    epoch + 1, self.config.num_train_epochs,
-                    batch_idx + 1, len(dataloader),
-                    step_stats, cost_time
-                )
+                print(f"Epoch {epoch + 1}/{self.config.num_train_epochs}, "
+                      f"Batch {batch_idx + 1}/{len(dataloader)}, "
+                      f"Eval Reward: {eval_stats['eval_reward']:.3f}, "
+                      f"Train Reward: {step_stats['avg_reward']:.3f}, "
+                      f"Tokens: {step_stats['avg_tokens']:.1f}, "
+                      f"Loss: {step_stats['avg_loss']:.4f}, "
+                      f"LogProb: {step_stats.get('avg_log_prob', 0):.3f}, "
+                      f"Time: {cost_time:.2f}s")
         
         return {f"avg_{k[:-1]}": np.mean(v) for k, v in epoch_metrics.items()}
         

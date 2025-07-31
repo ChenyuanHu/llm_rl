@@ -15,6 +15,10 @@ class TrainingConfig:
     max_length: int = 512  # 减少长度，适合简单的加减法
     max_new_tokens: int = 32  # 减少生成长度，适合简单答案
     max_samples: Optional[int] = 2000  # 先用少量样本测试训练稳定性
+    
+    # 评估配置
+    eval_split_ratio: float = 0.2  # 评估集占总数据集的比例
+    eval_batch_size: int = 8  # 评估时的批大小
 
     # 数据生成配置
     rollout_temperature: float = 1.0

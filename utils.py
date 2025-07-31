@@ -180,6 +180,9 @@ class MetricsTracker:
         self.rewards = []
         self.losses = []
         self.steps = []
+        # 新增评估指标
+        self.eval_rewards = []
+        self.eval_token_counts = []
     
     def add_metrics(self, step: int, token_count: float, reward: float, loss: float):
         self.steps.append(step)
@@ -187,20 +190,35 @@ class MetricsTracker:
         self.rewards.append(reward)
         self.losses.append(loss)
     
+    def add_eval_metrics(self, eval_reward: float, eval_token_count: float):
+        """添加评估指标"""
+        self.eval_rewards.append(eval_reward)
+        self.eval_token_counts.append(eval_token_count)
+    
     def get_averages(self) -> Dict[str, float]:
-        if not self.token_counts:
-            return {"avg_tokens": 0, "avg_reward": 0, "avg_loss": 0}
+        result = {"avg_tokens": 0, "avg_reward": 0, "avg_loss": 0, "avg_eval_reward": 0, "avg_eval_tokens": 0}
         
-        return {
-            "avg_tokens": np.mean(self.token_counts),
-            "avg_reward": np.mean(self.rewards),
-            "avg_loss": np.mean(self.losses)
-        }
+        if self.token_counts:
+            result.update({
+                "avg_tokens": np.mean(self.token_counts),
+                "avg_reward": np.mean(self.rewards),
+                "avg_loss": np.mean(self.losses)
+            })
+        
+        if self.eval_rewards:
+            result.update({
+                "avg_eval_reward": np.mean(self.eval_rewards),
+                "avg_eval_tokens": np.mean(self.eval_token_counts)
+            })
+        
+        return result
     
     def save_to_dict(self) -> Dict[str, List]:
         return {
             "steps": self.steps,
             "token_counts": self.token_counts,
             "rewards": self.rewards,
-            "losses": self.losses
+            "losses": self.losses,
+            "eval_rewards": self.eval_rewards,
+            "eval_token_counts": self.eval_token_counts
         } 
