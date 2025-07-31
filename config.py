@@ -15,6 +15,10 @@ class TrainingConfig:
     max_length: int = 512  # 减少长度，适合简单的加减法
     max_new_tokens: int = 32  # 减少生成长度，适合简单答案
     max_samples: Optional[int] = 2000  # 先用少量样本测试训练稳定性
+
+    # 数据生成配置
+    rollout_temperature: float = 1.0
+    eval_temperature: float = 0.1
     
     # 自定义数学数据集配置
     custom_math_size: int = 10000  # 自定义数据集大小

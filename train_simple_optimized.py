@@ -104,7 +104,7 @@ class SimpleGRPOTrainer:
         
         print(f"设置完成 - 模型已加载，数据集: {len(self.dataset)}条样本")
         
-    def generate_and_evaluate_batch(self, batch_data: List[Dict]) -> List[Dict]:
+    def generate_and_evaluate_batch(self, batch_data: List[Dict], is_rollout: bool = True) -> List[Dict]:
         """批量生成响应并评估 - 优化版本"""
         # 准备批量输入
         prompts = []
@@ -135,7 +135,7 @@ class SimpleGRPOTrainer:
                 **inputs,
                 max_new_tokens=self.config.max_new_tokens,
                 do_sample=True,
-                temperature=1.0,
+                temperature=self.config.rollout_temperature if is_rollout else self.config.eval_temperature,
                 # top_k=10,
                 # top_p=0.9,
                 # repetition_penalty=1.1,
